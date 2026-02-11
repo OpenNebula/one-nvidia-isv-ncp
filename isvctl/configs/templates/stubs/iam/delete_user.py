@@ -66,7 +66,9 @@ def main() -> int:
 
     result["error"] = "Not implemented - replace with your platform's user deletion logic"
     print(json.dumps(result, indent=2))
-    return 1
+
+    # Return 0 if success, non-zero if failure
+    return 0 if result["success"] else 1
 
 
 if __name__ == "__main__":

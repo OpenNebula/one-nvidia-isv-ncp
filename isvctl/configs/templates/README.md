@@ -47,6 +47,8 @@ uv run isvctl test run -f isvctl/configs/my-isv/iam.yaml
 
 Each script must print **one JSON object** to stdout. The minimum required fields vary by step:
 
+> Note: scripts should also use process exit codes (`0` for success, non-zero for failure) so failures are visible in step execution logs.
+
 ### `create_user` (setup phase)
 
 ```json
