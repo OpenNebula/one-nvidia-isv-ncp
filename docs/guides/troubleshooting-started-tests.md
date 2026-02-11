@@ -1,6 +1,6 @@
 # Troubleshooting: Test Runs Stuck in STARTED
 
-This guide helps ISV Lab partners (e.g. Mirantis) diagnose and fix test runs that never reach a terminal state (SUCCESS or FAILED) and remain **STARTED** in the [ISV Validation Labs portal](https://ncp-isv-validation-labs.nvidia.com/).
+This guide helps ISV Lab partners diagnose and fix test runs that never reach a terminal state (SUCCESS or FAILED) and remain **STARTED** in the [ISV Validation Labs portal](https://ncp-isv-validation-labs.nvidia.com/).
 
 ## Root cause (single RCA)
 
@@ -109,7 +109,7 @@ isvctl report update --lab-id <LAB_ID> --test-run-id <TEST_RUN_ID> --status FAIL
 isvctl report update --lab-id <LAB_ID> --test-run-id <TEST_RUN_ID> --status SUCCESS
 ```
 
-Get `<TEST_RUN_ID>` from the portal (e.g. 66, 67, 68, 71, 72, 73). `<LAB_ID>` is your assigned lab ID (e.g. Mirantis Lab).
+Get `<TEST_RUN_ID>` from the portal (e.g. 66, 67, 68, 71, 72, 73). `<LAB_ID>` is your assigned lab ID.
 
 ## Summary
 
@@ -120,4 +120,4 @@ Get `<TEST_RUN_ID>` from the portal (e.g. 66, 67, 68, 71, 72, 73). `<LAB_ID>` is
 | Process exits early | Fix timeouts, OOM, or hanging validations so the same process can reach the update call. |
 | Existing STARTED runs | Use `isvctl report update --lab-id ... --test-run-id ... --status FAILED` (or SUCCESS) to close them. |
 
-For more detail on installation and running tests, see the [ISV Lab Validation Guide - Mirantis](https://apps.nvidia.com/PID/ContentLibraries/Detail?id=1146950) and the in-repo [Getting Started](../getting-started.md) and [Configuration](configuration.md) guides.
+For more detail on installation and running tests, see the [ISV Lab Validation Guide](https://apps.nvidia.com/PID/ContentLibraries/Detail?id=1146950) and the in-repo [Getting Started](../getting-started.md) and [Configuration](configuration.md) guides.
