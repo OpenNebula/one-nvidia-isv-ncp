@@ -31,3 +31,38 @@ jobs:
 
       - name: Run pre-commit
         run: make pre-commit
+
+  test:
+    name: Unit Tests
+    runs-on: linux-amd64-cpu4
+    needs: pre-commit
+    container:
+      image: ghcr.io/nvidia/dsx-cds-tools:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: make test
+
+  # Gate job: aggregates all job results into a single required status check.
+  # Note: When adding new jobs above, append them to the 'needs' list below.
+  pipeline-status:
+    name: Pipeline Status
+    runs-on: linux-amd64-cpu4
+    if: always()
+    needs: [pre-commit, test]
+    steps:
+      - name: Check Pipeline Status
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more jobs on the pipeline failed! Check the logs for details."
+            exit 1
+          fi
