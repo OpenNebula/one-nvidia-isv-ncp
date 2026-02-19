@@ -1,9 +1,21 @@
 """Tests for validation module."""
 
-from unittest.mock import MagicMock
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from isvtest.core.runners import CommandResult
 from isvtest.core.validation import BaseValidation
+from isvtest.tests.test_validations import (
+    _validation_results,
+    clear_validation_results,
+)
+from isvtest.tests.test_validations import (
+    test_validation as run_validation_entry_point,
+)
+from isvtest.validations.instance import InstanceListCheck
+from isvtest.validations.nim import SshNimHealthCheck, SshNimInferenceCheck, SshNimModelCheck
 
 
 class ConcreteValidation(BaseValidation):
@@ -170,3 +182,460 @@ class TestBaseValidation:
         validation = ConcreteValidation()
         assert validation.log is not None
         assert validation.log.name == "ConcreteValidation"
+
+
+class TestInstanceListCheck:
+    """Tests for InstanceListCheck validation."""
+
+    def _make_instance(
+        self,
+        instance_id: str = "i-abc123",
+        state: str = "running",
+        vpc_id: str = "vpc-111",
+    ) -> dict:
+        return {
+            "instance_id": instance_id,
+            "instance_type": "g5.xlarge",
+            "state": state,
+            "public_ip": "54.0.0.1",
+            "private_ip": "10.0.0.1",
+            "vpc_id": vpc_id,
+        }
+
+    def test_valid_list(self) -> None:
+        """Test passing with a valid instance list."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [self._make_instance()],
+                    "count": 1,
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is True
+        assert "Listed 1 instance(s)" in result["output"]
+
+    def test_found_target(self) -> None:
+        """Test passing when target instance is found."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [self._make_instance(instance_id="i-target")],
+                    "count": 1,
+                    "found_target": True,
+                    "target_instance": "i-target",
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is True
+        assert "i-target" in result["output"]
+        assert "found" in result["output"]
+
+    def test_empty_list(self) -> None:
+        """Test failure with an empty instance list."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [],
+                    "count": 0,
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is False
+        assert "at least 1" in result["error"]
+
+    def test_missing_instances_key(self) -> None:
+        """Test failure when instances key is missing."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "count": 0,
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is False
+        assert "No 'instances' key" in result["error"]
+
+    def test_target_not_found(self) -> None:
+        """Test failure when target instance is not in the list."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [self._make_instance(instance_id="i-other")],
+                    "count": 1,
+                    "found_target": False,
+                    "target_instance": "i-target",
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is False
+        assert "i-target" in result["error"]
+        assert "not found" in result["error"]
+
+    def test_missing_required_fields(self) -> None:
+        """Test failure when an instance is missing required fields."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [{"instance_type": "g5.xlarge"}],
+                    "count": 1,
+                },
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is False
+        assert "missing required field" in result["error"]
+
+    def test_custom_min_count(self) -> None:
+        """Test failure when instance count is below custom min_count."""
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": [self._make_instance()],
+                    "count": 1,
+                },
+                "min_count": 3,
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is False
+        assert "at least 3" in result["error"]
+
+    def test_custom_min_count_satisfied(self) -> None:
+        """Test passing when custom min_count is satisfied."""
+        instances = [self._make_instance(instance_id=f"i-{i}") for i in range(3)]
+        v = InstanceListCheck(
+            config={
+                "step_output": {
+                    "instances": instances,
+                    "count": 3,
+                },
+                "min_count": 3,
+            }
+        )
+        result = v.execute()
+        assert result["passed"] is True
+
+
+def _mock_ssh_run(responses: dict[str, tuple[int, str, str]]):
+    """Create a mock run_ssh_command that returns canned responses by substring match."""
+
+    def _run(ssh: MagicMock, command: str) -> tuple[int, str, str]:
+        for pattern, response in responses.items():
+            if pattern in command:
+                return response
+        return (1, "", "unknown command")
+
+    return _run
+
+
+def _nim_config(extra: dict | None = None) -> dict:
+    """Build a minimal NIM validation config with SSH details."""
+    cfg: dict = {
+        "step_output": {
+            "success": True,
+            "host": "10.0.0.1",
+            "key_file": "/tmp/test.pem",
+            "ssh_user": "ubuntu",
+            "port": 8000,
+        },
+    }
+    if extra:
+        cfg.update(extra)
+    return cfg
+
+
+class TestSshNimHealthCheck:
+    """Tests for SshNimHealthCheck validation."""
+
+    def test_skipped_when_nim_not_deployed(self) -> None:
+        """Test skip when deploy_nim was skipped."""
+        import pytest
+
+        v = SshNimHealthCheck(
+            config={
+                "step_output": {
+                    "skipped": True,
+                    "skip_reason": "NGC_NIM_API_KEY not set",
+                },
+            }
+        )
+        with pytest.raises(pytest.skip.Exception, match="NGC_NIM_API_KEY"):
+            v.execute()
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_healthy(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test passing when health endpoint returns OK."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (0, "\n0", "")
+
+        v = SshNimHealthCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is True
+        assert "health check passed" in result["output"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_unhealthy(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when health endpoint is not ready."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (1, "1", "")
+
+        v = SshNimHealthCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "not ready" in result["error"]
+
+    def test_missing_host(self) -> None:
+        """Test failure when host is missing but step succeeded."""
+        v = SshNimHealthCheck(config={"step_output": {"success": True}})
+        result = v.execute()
+        assert result["passed"] is False
+        assert "Missing host" in result["error"]
+
+    def test_skipped_when_step_failed(self) -> None:
+        """Test skip when deploy_nim step output is empty (timed out)."""
+        import pytest
+
+        v = SshNimHealthCheck(config={"step_output": {}})
+        with pytest.raises(pytest.skip.Exception, match="did not succeed"):
+            v.execute()
+
+
+class TestSshNimInferenceCheck:
+    """Tests for SshNimInferenceCheck validation."""
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_successful_inference(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test passing with valid inference response."""
+        mock_ssh.return_value = MagicMock()
+
+        models_response = json.dumps({"data": [{"id": "meta/llama-3.2-3b-instruct"}]})
+        inference_response = json.dumps(
+            {
+                "choices": [{"message": {"content": "CUDA is a platform..."}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 10, "prompt_tokens": 5, "total_tokens": 15},
+            }
+        )
+
+        mock_run.side_effect = _mock_ssh_run(
+            {
+                "/v1/models": (0, models_response, ""),
+                "/v1/chat/completions": (0, inference_response, ""),
+            }
+        )
+
+        v = SshNimInferenceCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is True
+        assert "inference OK" in result["output"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_empty_choices(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when response has no choices."""
+        mock_ssh.return_value = MagicMock()
+
+        mock_run.side_effect = _mock_ssh_run(
+            {
+                "/v1/models": (0, json.dumps({"data": [{"id": "test-model"}]}), ""),
+                "/v1/chat/completions": (0, json.dumps({"choices": []}), ""),
+            }
+        )
+
+        v = SshNimInferenceCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "No choices" in result["error"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_no_model_detected(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when no model can be detected."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (1, "", "error")
+
+        v = SshNimInferenceCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "Could not determine model" in result["error"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_model_from_config(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test that model can be specified directly in config."""
+        mock_ssh.return_value = MagicMock()
+
+        inference_response = json.dumps(
+            {
+                "choices": [{"message": {"content": "response"}, "finish_reason": "stop"}],
+            }
+        )
+
+        mock_run.side_effect = _mock_ssh_run(
+            {
+                "/v1/chat/completions": (0, inference_response, ""),
+            }
+        )
+
+        v = SshNimInferenceCheck(config=_nim_config({"model": "my-model"}))
+        result = v.execute()
+        assert result["passed"] is True
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_invalid_json_response(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when inference returns invalid JSON."""
+        mock_ssh.return_value = MagicMock()
+
+        mock_run.side_effect = _mock_ssh_run(
+            {
+                "/v1/models": (0, json.dumps({"data": [{"id": "test-model"}]}), ""),
+                "/v1/chat/completions": (0, "not json", ""),
+            }
+        )
+
+        v = SshNimInferenceCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "Invalid JSON" in result["error"]
+
+
+class TestSshNimModelCheck:
+    """Tests for SshNimModelCheck validation."""
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_models_returned(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test passing when models are returned."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (
+            0,
+            json.dumps({"data": [{"id": "meta/llama-3.2-3b-instruct"}]}),
+            "",
+        )
+
+        v = SshNimModelCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is True
+        assert "llama" in result["output"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_no_models(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when no models are returned."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (0, json.dumps({"data": []}), "")
+
+        v = SshNimModelCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "No models" in result["error"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_expected_model_found(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test passing when expected model is found."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (
+            0,
+            json.dumps({"data": [{"id": "meta/llama-3.2-3b-instruct"}]}),
+            "",
+        )
+
+        v = SshNimModelCheck(config=_nim_config({"expected_model": "llama"}))
+        result = v.execute()
+        assert result["passed"] is True
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_expected_model_not_found(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when expected model is not found."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (
+            0,
+            json.dumps({"data": [{"id": "meta/llama-3.2-3b-instruct"}]}),
+            "",
+        )
+
+        v = SshNimModelCheck(config=_nim_config({"expected_model": "mistral"}))
+        result = v.execute()
+        assert result["passed"] is False
+        assert "expected_model" in result["error"]
+
+    @patch("isvtest.validations.nim.get_ssh_client")
+    @patch("isvtest.validations.nim.run_ssh_command")
+    def test_request_failed(self, mock_run: MagicMock, mock_ssh: MagicMock) -> None:
+        """Test failure when models endpoint is unreachable."""
+        mock_ssh.return_value = MagicMock()
+        mock_run.return_value = (1, "", "connection refused")
+
+        v = SshNimModelCheck(config=_nim_config())
+        result = v.execute()
+        assert result["passed"] is False
+        assert "failed" in result["error"]
+
+
+class TestValidationResultCapture:
+    """Tests that test_validation() captures results in _validation_results.
+
+    Exercises the orchestration integration path: skipped, passed, and failed
+    validations must all appear in the in-memory results list so the
+    ORCHESTRATION RESULTS summary can display them.
+    """
+
+    def setup_method(self) -> None:
+        clear_validation_results()
+
+    def test_skipped_validation_captured(self) -> None:
+        """Skipped validations must appear in _validation_results with skipped=True."""
+        config = {
+            "step_output": {"skipped": True, "skip_reason": "NGC_NIM_API_KEY not set"},
+            "_category": "nim",
+        }
+        subtests = MagicMock()
+
+        with pytest.raises(pytest.skip.Exception):
+            run_validation_entry_point(SshNimHealthCheck, config, "SshNimHealthCheck", subtests)
+
+        assert len(_validation_results) == 1
+        r = _validation_results[0]
+        assert r["name"] == "SshNimHealthCheck"
+        assert r["skipped"] is True
+        assert r["passed"] is True
+        assert r["category"] == "nim"
+        assert "NGC_NIM_API_KEY" in r["message"]
+
+    def test_passed_validation_captured(self) -> None:
+        """Passed validations must appear with skipped=False."""
+        config = {"_category": "test_cat"}
+        subtests = MagicMock()
+
+        run_validation_entry_point(ConcreteValidation, config, "ConcreteValidation", subtests)
+
+        assert len(_validation_results) == 1
+        r = _validation_results[0]
+        assert r["name"] == "ConcreteValidation"
+        assert r["skipped"] is False
+        assert r["passed"] is True
+
+    def test_failed_validation_captured(self) -> None:
+        """Failed validations must appear with passed=False."""
+        config = {"_category": "test_cat"}
+        subtests = MagicMock()
+
+        with pytest.raises(AssertionError):
+            run_validation_entry_point(FailingValidation, config, "FailingValidation", subtests)
+
+        assert len(_validation_results) == 1
+        r = _validation_results[0]
+        assert r["name"] == "FailingValidation"
+        assert r["skipped"] is False
+        assert r["passed"] is False

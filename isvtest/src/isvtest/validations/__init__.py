@@ -33,6 +33,7 @@ from isvtest.validations.iam import (
 )
 from isvtest.validations.instance import (
     InstanceCreatedCheck,
+    InstanceListCheck,
     InstanceStateCheck,
 )
 from isvtest.validations.network import (
@@ -43,6 +44,11 @@ from isvtest.validations.network import (
     TrafficFlowCheck,
     VpcCrudCheck,
     VpcIsolationCheck,
+)
+from isvtest.validations.nim import (
+    SshNimHealthCheck,
+    SshNimInferenceCheck,
+    SshNimModelCheck,
 )
 
 __all__ = [
@@ -55,6 +61,7 @@ __all__ = [
     "FieldValueCheck",
     "GpuOperatorInstalledCheck",
     "InstanceCreatedCheck",
+    "InstanceListCheck",
     "InstanceStateCheck",
     "NetworkConnectivityCheck",
     "NetworkProvisionedCheck",
@@ -62,6 +69,9 @@ __all__ = [
     "PerformanceCheck",
     "SchemaValidation",
     "SecurityBlockingCheck",
+    "SshNimHealthCheck",
+    "SshNimInferenceCheck",
+    "SshNimModelCheck",
     "StepSuccessCheck",
     "SubnetConfigCheck",
     "TenantCreatedCheck",

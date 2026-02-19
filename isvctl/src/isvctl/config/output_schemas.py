@@ -39,6 +39,8 @@ STEP_SCHEMA_MAPPING: dict[str, str | None] = {
     "create_instance": "instance",
     "provision_vm": "instance",
     "create_vm": "instance",
+    # Instance list operations -> "instance_list" schema
+    "list_instances": "instance_list",
     # GPU setup -> "gpu_setup" schema
     "install_gpu_operator": "gpu_setup",
     "setup_gpu": "gpu_setup",
@@ -48,6 +50,10 @@ STEP_SCHEMA_MAPPING: dict[str, str | None] = {
     "run_test": "workload_result",
     "run_benchmark": "workload_result",
     "execute_workload": "workload_result",
+    # NIM deployment -> "nim_deploy" schema
+    "deploy_nim": "nim_deploy",
+    # NIM teardown -> "teardown" schema
+    "teardown_nim": "teardown",
     # Teardown operations -> "teardown" schema
     "teardown": "teardown",
     "cleanup": "teardown",
@@ -161,6 +167,50 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "instance_type": {"type": "string", "description": "Instance type/size"},
             "ssh_user": {"type": "string", "description": "SSH username"},
             "ssh_key_path": {"type": "string", "description": "Path to SSH private key"},
+        },
+        "additionalProperties": True,
+    },
+    "instance_list": {
+        "type": "object",
+        "required": ["success", "platform"],
+        "properties": {
+            **COMMON_PROPERTIES,
+            "instances": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "instance_id": {"type": "string"},
+                        "instance_type": {"type": "string"},
+                        "state": {"type": "string"},
+                        "public_ip": {"type": ["string", "null"]},
+                        "private_ip": {"type": ["string", "null"]},
+                        "vpc_id": {"type": "string"},
+                    },
+                },
+                "description": "List of instances in the VPC",
+            },
+            "count": {"type": "integer", "description": "Number of instances"},
+            "found_target": {"type": "boolean", "description": "Target instance was found"},
+            "target_instance": {"type": "string", "description": "Target instance ID searched for"},
+        },
+        "additionalProperties": True,
+    },
+    "nim_deploy": {
+        "type": "object",
+        "required": ["success", "platform"],
+        "properties": {
+            **COMMON_PROPERTIES,
+            "container_id": {"type": ["string", "null"], "description": "Docker container ID"},
+            "container_name": {"type": "string", "description": "Docker container name"},
+            "model": {"type": "string", "description": "NIM model name"},
+            "image": {"type": "string", "description": "Container image used"},
+            "endpoint": {"type": "string", "description": "NIM endpoint URL"},
+            "port": {"type": "integer", "description": "Host port NIM is exposed on"},
+            "health_ready": {"type": "boolean", "description": "Whether health check passed"},
+            "host": {"type": "string", "description": "Remote host IP"},
+            "key_file": {"type": "string", "description": "SSH key file path"},
+            "ssh_user": {"type": "string", "description": "SSH username"},
         },
         "additionalProperties": True,
     },
