@@ -28,10 +28,10 @@ uv run isvctl --help
 
 ```bash
 # AWS control plane validation
-uv run isvctl test run -f isvctl/configs/aws-control-plane.yaml
+uv run isvctl test run -f isvctl/configs/aws/control-plane.yaml
 
 # AWS network validation
-uv run isvctl test run -f isvctl/configs/aws-network.yaml
+uv run isvctl test run -f isvctl/configs/aws/network.yaml
 
 # Kubernetes cluster
 uv run isvctl test run -f isvctl/configs/k8s.yaml
@@ -106,6 +106,9 @@ See [Remote Deployment Guide](guides/remote-deployment.md) for details.
 
 ## Next Steps
 
-- [Configuration Guide](guides/configuration.md) - Learn about configuration options
+- [Validation Templates](../isvctl/configs/templates/README.md) - Adding your own platform? Start here
+- [AWS Reference Implementation](references/aws.md) - Working AWS examples to study
+- [Configuration Guide](guides/configuration.md) - Config file format and options
+- [External Validation Guide](guides/external-validation-guide.md) - Custom validations without modifying the repo
 - [Local Development](guides/local-development.md) - Running tests locally
 - [isvctl Reference](packages/isvctl.md) - Full isvctl documentation
