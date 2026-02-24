@@ -13,8 +13,14 @@ Requires paramiko: pip install paramiko
 
 from __future__ import annotations
 
+import base64
 import os
-from typing import ClassVar
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    import paramiko
 
 from isvtest.core.ssh import (
     get_failed_subtests,
@@ -1001,23 +1007,743 @@ class SshDriverCheck(BaseValidation):
 # =============================================================================
 
 
-# FIXME: The test is a placeholder, we should have better approach.
-class SshGpuStressCheck(BaseValidation):
-    """Run GPU stress test via SSH.
+def _detect_ssh_container_runtime(ssh: paramiko.SSHClient) -> str:
+    """Detect available container runtime on a remote host via SSH.
 
-    Works on any platform with SSH + PyTorch.
+    Checks for Docker with NVIDIA GPU support. Falls back to "python"
+    if Docker is not available or the NVIDIA runtime is not configured.
+
+    Args:
+        ssh: Connected paramiko SSHClient instance
+
+    Returns:
+        "docker" if Docker + NVIDIA runtime works, otherwise "python"
+    """
+    exit_code, stdout, _ = run_ssh_command(
+        ssh,
+        "docker info --format '{{.Runtimes}}' 2>/dev/null",
+    )
+    if exit_code != 0:
+        return "python"
+    if "nvidia" not in stdout.lower():
+        return "python"
+    return "docker"
+
+
+class SshGpuStressCheck(BaseValidation):
+    """Run GPU stress test via SSH using PyTorch matrix multiplications.
+
+    Runs the same gpu_stress_torch.py script used by Slurm/K8s workloads,
+    but executed remotely over SSH inside a Docker container (or directly
+    with system Python if container_runtime is "python").
 
     Config:
         host, key_file, user: SSH connection details
-        duration: Stress test duration in seconds (default: 60)
+        runtime (int): Stress duration in seconds (default: 30)
+        memory_gb (int): Target GPU memory usage in GB (default: 16)
+        image (str): PyTorch container image (default: nvcr.io/nvidia/pytorch:25.04-py3)
+        container_runtime (str): "docker" or "python" (default: "docker")
+        expected_gpus (int): Expected GPU count to validate (optional)
     """
 
     description: ClassVar[str] = "GPU stress test via SSH"
-    timeout: ClassVar[int] = 600
+    timeout: ClassVar[int] = 900
     markers: ClassVar[list[str]] = ["ssh", "gpu", "workload"]
 
     def run(self) -> None:
-        self.set_passed("GPU stress completed (placeholder)")
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        runtime = self.config.get("runtime", 30)
+        memory_gb = self.config.get("memory_gb", 16)
+        image = self.config.get("image", "nvcr.io/nvidia/pytorch:25.04-py3")
+        container_runtime = self.config.get("container_runtime")
+        expected_gpus = self.config.get("expected_gpus", ssh_cfg.get("gpu_count"))
+
+        script_path = Path(__file__).parent.parent / "workloads" / "scripts" / "gpu_stress_torch.py"
+        if not script_path.exists():
+            self.set_failed(f"GPU stress script not found: {script_path}")
+            return
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            # Auto-detect runtime if not explicitly configured
+            if not container_runtime:
+                container_runtime = _detect_ssh_container_runtime(ssh)
+                self.log.info(f"Auto-detected runtime: {container_runtime}")
+
+            script_b64 = base64.b64encode(script_path.read_bytes()).decode()
+            decode_and_run = f"echo {script_b64} | base64 -d | python3"
+            env_vars = f"GPU_STRESS_RUNTIME={runtime} GPU_MEMORY_GB={memory_gb}"
+
+            if container_runtime == "python":
+                cmd = f"bash -c '{env_vars} {decode_and_run}'"
+            else:
+                cmd = (
+                    f"docker run --rm --gpus all "
+                    f"-e GPU_STRESS_RUNTIME={runtime} -e GPU_MEMORY_GB={memory_gb} "
+                    f"{image} bash -c '{decode_and_run}'"
+                )
+
+            self.log.info(
+                f"Running GPU stress on {host}: runtime={runtime}s, memory={memory_gb}GB, mode={container_runtime}"
+            )
+
+            _, stdout, stderr = run_ssh_command(ssh, cmd)
+            ssh.close()
+
+            output = f"{stdout}\n{stderr}".strip()
+            self.log.debug(f"GPU stress output:\n{output[:2000]}")
+
+            if "FAILURE:" in output:
+                self.report_subtest("gpu_stress", False, output.strip())
+                self.set_failed(f"GPU stress failed on {host}: {output.strip()}")
+                return
+
+            if "SUCCESS:" not in output:
+                self.report_subtest("gpu_stress", False, "SUCCESS marker not found")
+                self.set_failed(
+                    f"GPU stress did not complete successfully on {host}",
+                    output=output[-500:],
+                )
+                return
+
+            # Parse SUCCESS line: "SUCCESS: hostname completed N loops with M GPU(s)"
+            match = re.search(r"SUCCESS:.*completed (\d+) loops with (\d+) GPU", output)
+            if match:
+                loops = int(match.group(1))
+                gpu_count = int(match.group(2))
+                self.report_subtest("loops", loops > 0, f"{loops} loops completed")
+                self.report_subtest("gpu_count", True, f"{gpu_count} GPU(s) stressed")
+
+                if expected_gpus and gpu_count < expected_gpus:
+                    self.report_subtest(
+                        "gpu_count_check",
+                        False,
+                        f"Expected {expected_gpus} GPUs, got {gpu_count}",
+                    )
+                    self.set_failed(f"GPU count mismatch: expected {expected_gpus}, got {gpu_count}")
+                    return
+            else:
+                self.report_subtest("parse", False, "Could not parse SUCCESS output")
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"GPU stress subtests failed: {', '.join(failed)}")
+            else:
+                self.set_passed(f"GPU stress passed on {host}: {output.strip().splitlines()[-1]}")
+
+        except Exception as e:
+            self.set_failed(f"GPU stress failed: {e}")
+
+
+class SshNcclCheck(BaseValidation):
+    """Run single-node NCCL AllReduce test via SSH.
+
+    Validates GPU-to-GPU communication (NVLink/NVSwitch) by running
+    NCCL all_reduce_perf_mpi via MPI inside a Docker container on the
+    target host. Uses the NVIDIA HPC Benchmarks image. Requires at least
+    2 GPUs.
+
+    Config:
+        host, key_file, user: SSH connection details
+        image (str): Container image (default: nvcr.io/nvidia/hpc-benchmarks:25.04)
+        min_bus_bw_gbps (float): Minimum acceptable bus bandwidth in GB/s (default: 0 = no threshold)
+        expected_gpus (int): Expected GPU count (optional, used for -np argument)
+        message_sizes (str): NCCL test size range flags (default: "-b 1M -e 256M -f 2")
+    """
+
+    description: ClassVar[str] = "NCCL AllReduce test via SSH"
+    timeout: ClassVar[int] = 900
+    markers: ClassVar[list[str]] = ["ssh", "gpu", "workload"]
+
+    _DEFAULT_IMAGE = "nvcr.io/nvidia/hpc-benchmarks:25.04"
+
+    def run(self) -> None:
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        image = self.config.get("image", self._DEFAULT_IMAGE)
+        min_bus_bw = float(self.config.get("min_bus_bw_gbps", 0))
+        message_sizes = self.config.get("message_sizes", "-b 1M -e 256M -f 2")
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            # Verify Docker + NVIDIA runtime are available (NCCL binaries come from the container)
+            has_docker = _detect_ssh_container_runtime(ssh) == "docker"
+            if not has_docker:
+                self.set_failed(
+                    f"Docker with NVIDIA runtime not available on {host}. "
+                    "NCCL tests require a container with NCCL test binaries."
+                )
+                ssh.close()
+                return
+
+            # Detect GPU count
+            exit_code, stdout, _ = run_ssh_command(ssh, "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l")
+            if exit_code != 0 or not stdout.strip().isdigit():
+                self.set_failed(f"Cannot detect GPU count on {host}")
+                ssh.close()
+                return
+
+            gpu_count = int(stdout.strip())
+            expected_gpus = self.config.get("expected_gpus")
+            if expected_gpus:
+                gpu_count = int(expected_gpus)
+
+            if gpu_count < 2:
+                self.set_passed(f"Skipped: {host} has {gpu_count} GPU(s), need >= 2 for NCCL test")
+                ssh.close()
+                return
+
+            self.report_subtest("gpu_count", True, f"{gpu_count} GPUs detected")
+
+            nccl_cmd = (
+                f"docker run --rm --gpus all --ipc=host {image} "
+                f"mpirun --allow-run-as-root -np {gpu_count} "
+                f"--bind-to none --map-by slot "
+                f"all_reduce_perf_mpi {message_sizes} -g 1"
+            )
+
+            self.log.info(f"Running NCCL AllReduce on {host} with {gpu_count} GPUs")
+            exit_code, stdout, stderr = run_ssh_command(ssh, nccl_cmd)
+            ssh.close()
+
+            output = f"{stdout}\n{stderr}".strip()
+            self.log.debug(f"NCCL output:\n{output[:3000]}")
+
+            if exit_code != 0 and "Avg bus bandwidth" not in output:
+                self.report_subtest("nccl_run", False, f"Exit code {exit_code}")
+                self.set_failed(f"NCCL test failed on {host}", output=output[-500:])
+                return
+
+            self.report_subtest("nccl_run", True, "NCCL test completed")
+
+            # Parse average bus bandwidth
+            avg_bw_match = re.search(r"#\s*Avg bus bandwidth\s*:\s*([\d.]+)", output)
+            if avg_bw_match:
+                avg_bw = float(avg_bw_match.group(1))
+                self.report_subtest("avg_bus_bw", True, f"{avg_bw:.2f} GB/s")
+
+                if min_bus_bw > 0:
+                    bw_ok = avg_bw >= min_bus_bw
+                    self.report_subtest(
+                        "bw_threshold",
+                        bw_ok,
+                        f"{avg_bw:.2f} GB/s vs {min_bus_bw} GB/s minimum",
+                    )
+                    if not bw_ok:
+                        self.set_failed(f"Bus bandwidth {avg_bw:.2f} GB/s below threshold {min_bus_bw} GB/s")
+                        return
+            else:
+                self.report_subtest("avg_bus_bw", False, "Could not parse bandwidth")
+
+            # Check out-of-bounds (data corruption)
+            oob_match = re.search(r"#\s*Out of bounds values\s*:\s*(\d+)", output)
+            if oob_match:
+                oob = int(oob_match.group(1))
+                oob_ok = oob == 0
+                self.report_subtest("data_integrity", oob_ok, f"{oob} out of bounds values")
+                if not oob_ok:
+                    self.set_failed(f"Data corruption: {oob} out of bounds values")
+                    return
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"NCCL subtests failed: {', '.join(failed)}")
+            else:
+                bw_msg = f", avg BW: {avg_bw:.2f} GB/s" if avg_bw_match else ""
+                self.set_passed(f"NCCL AllReduce passed on {host} ({gpu_count} GPUs{bw_msg})")
+
+        except Exception as e:
+            self.set_failed(f"NCCL test failed: {e}")
+
+
+class SshTrainingCheck(BaseValidation):
+    """Run a DDP PyTorch training workload via SSH.
+
+    Validates the full distributed training stack by running a small MLP
+    with DistributedDataParallel across all GPUs.  Uses ``torchrun`` to
+    launch one process per GPU, with NCCL gradient synchronisation every
+    step -- the same communication path real training workloads use.
+
+    Validates:
+      - Forward / backward / optimizer work on every GPU
+      - NCCL gradient sync completes without error
+      - Weights stay identical across all ranks (DDP invariant)
+
+    Config:
+        host, key_file, user: SSH connection details
+        steps (int): Number of training steps (default: 50)
+        batch_size (int): Training batch size (default: 64)
+        hidden_size (int): Hidden layer size (default: 2048)
+        image (str): PyTorch container image (default: nvcr.io/nvidia/pytorch:25.04-py3)
+        container_runtime (str): "docker" or "python" (default: auto-detect)
+        expected_gpus (int): Expected GPU count (optional)
+    """
+
+    description: ClassVar[str] = "DDP training workload via SSH"
+    timeout: ClassVar[int] = 900
+    markers: ClassVar[list[str]] = ["ssh", "gpu", "workload"]
+
+    def run(self) -> None:
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        steps = self.config.get("steps", 50)
+        batch_size = self.config.get("batch_size", 64)
+        hidden_size = self.config.get("hidden_size", 2048)
+        image = self.config.get("image", "nvcr.io/nvidia/pytorch:25.04-py3")
+        container_runtime = self.config.get("container_runtime")
+        expected_gpus = self.config.get("expected_gpus", ssh_cfg.get("gpu_count"))
+
+        script_path = Path(__file__).parent.parent / "workloads" / "scripts" / "gpu_train_torch.py"
+        if not script_path.exists():
+            self.set_failed(f"Training script not found: {script_path}")
+            return
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            if not container_runtime:
+                container_runtime = _detect_ssh_container_runtime(ssh)
+                self.log.info(f"Auto-detected runtime: {container_runtime}")
+
+            # Detect GPU count for torchrun --nproc_per_node
+            exit_code, stdout_gpu, _ = run_ssh_command(ssh, "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l")
+            if exit_code != 0 or not stdout_gpu.strip().isdigit():
+                self.set_failed(f"Cannot detect GPU count on {host}")
+                ssh.close()
+                return
+            gpu_count = int(stdout_gpu.strip())
+            if expected_gpus:
+                gpu_count = int(expected_gpus)
+
+            script_b64 = base64.b64encode(script_path.read_bytes()).decode()
+            # torchrun needs a file path, not stdin
+            write_and_run = (
+                f"echo {script_b64} | base64 -d > /tmp/_isv_train.py && "
+                f"torchrun --nproc_per_node={gpu_count} /tmp/_isv_train.py"
+            )
+            env_vars = f"TRAIN_STEPS={steps} TRAIN_BATCH_SIZE={batch_size} TRAIN_HIDDEN_SIZE={hidden_size}"
+
+            if container_runtime == "python":
+                cmd = f"bash -c '{env_vars} {write_and_run}'"
+            else:
+                cmd = (
+                    f"docker run --rm --gpus all --ipc=host "
+                    f"-e TRAIN_STEPS={steps} -e TRAIN_BATCH_SIZE={batch_size} "
+                    f"-e TRAIN_HIDDEN_SIZE={hidden_size} "
+                    f"{image} bash -c '{write_and_run}'"
+                )
+
+            self.log.info(
+                f"Running DDP training on {host}: {gpu_count} GPUs, steps={steps}, "
+                f"batch={batch_size}, hidden={hidden_size}, mode={container_runtime}"
+            )
+
+            _, stdout, stderr = run_ssh_command(ssh, cmd)
+            ssh.close()
+
+            output = f"{stdout}\n{stderr}".strip()
+            self.log.debug(f"Training output:\n{output[:2000]}")
+
+            if "FAILURE:" in output:
+                self.report_subtest("training", False, output.strip())
+                self.set_failed(f"Training failed on {host}: {output.strip()}")
+                return
+
+            if "SUCCESS:" not in output:
+                self.report_subtest("training", False, "SUCCESS marker not found")
+                self.set_failed(
+                    f"Training did not complete on {host}",
+                    output=output[-500:],
+                )
+                return
+
+            # Parse per-GPU results (DDP format includes synced field)
+            gpu_lines = re.findall(
+                r"GPU (\d+): loss ([\d.]+) -> ([\d.]+) "
+                r"\(decreased=(True|False), grads=(True|False), synced=(True|False)\)",
+                output,
+            )
+            for gpu_id, first, last, decreased, grads, synced in gpu_lines:
+                grad_ok = grads == "True"
+                sync_ok = synced == "True"
+                self.report_subtest(
+                    f"gpu{gpu_id}_grads",
+                    grad_ok,
+                    f"GPU {gpu_id}: loss {first} -> {last}, grads={grads}",
+                )
+                self.report_subtest(
+                    f"gpu{gpu_id}_sync",
+                    sync_ok,
+                    f"GPU {gpu_id}: weights synced={synced}",
+                )
+
+            # Parse SUCCESS line
+            match = re.search(r"SUCCESS:.*trained (\d+) steps on (\d+) GPU", output)
+            if match:
+                trained_steps = int(match.group(1))
+                result_gpus = int(match.group(2))
+                self.report_subtest("steps", trained_steps > 0, f"{trained_steps} steps completed")
+                self.report_subtest("ddp", True, f"DDP on {result_gpus} GPU(s)")
+
+                if expected_gpus and result_gpus < expected_gpus:
+                    self.report_subtest(
+                        "gpu_count_check",
+                        False,
+                        f"Expected {expected_gpus} GPUs, got {result_gpus}",
+                    )
+                    self.set_failed(f"GPU count mismatch: expected {expected_gpus}, got {result_gpus}")
+                    return
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"Training subtests failed: {', '.join(failed)}")
+            else:
+                self.set_passed(f"Training passed on {host}: {output.strip().splitlines()[-1]}")
+
+        except Exception as e:
+            self.set_failed(f"Training check failed: {e}")
+
+
+# =============================================================================
+# Network / Interconnect Validations
+# =============================================================================
+
+
+class SshNvlinkCheck(BaseValidation):
+    """Validate NVLink topology and link status via SSH.
+
+    Checks that NVLink interconnects between GPUs are present and active
+    using ``nvidia-smi nvlink -s`` and ``nvidia-smi topo -m``.
+
+    Config:
+        host, key_file, user: SSH connection details
+        expected_gpus (int): Expected GPU count (optional)
+    """
+
+    description: ClassVar[str] = "NVLink topology and status via SSH"
+    timeout: ClassVar[int] = 120
+    markers: ClassVar[list[str]] = ["ssh", "gpu", "network"]
+
+    def run(self) -> None:
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        expected_gpus = self.config.get("expected_gpus", ssh_cfg.get("gpu_count"))
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            # Check NVLink status per GPU
+            exit_code, stdout, _ = run_ssh_command(ssh, "nvidia-smi nvlink -s 2>/dev/null")
+            if exit_code != 0 or not stdout.strip():
+                # NVLink may not be available (e.g., consumer GPUs)
+                self.report_subtest("nvlink", True, "NVLink not available (OK for non-NVLink GPUs)")
+                self.set_passed(f"NVLink not available on {host} (skipped)")
+                ssh.close()
+                return
+
+            # Parse per-GPU NVLink status
+            # Format: "GPU 0: ..." followed by link lines
+            current_gpu = None
+            gpu_links: dict[str, list[str]] = {}
+            inactive_links: list[str] = []
+            for line in stdout.strip().splitlines():
+                gpu_match = re.match(r"GPU\s+(\d+):", line)
+                if gpu_match:
+                    current_gpu = gpu_match.group(1)
+                    gpu_links[current_gpu] = []
+                elif current_gpu is not None and line.strip():
+                    gpu_links[current_gpu].append(line.strip())
+                    if "inactive" in line.lower():
+                        inactive_links.append(f"GPU {current_gpu}: {line.strip()}")
+
+            for gpu_id, links in gpu_links.items():
+                active = [ln for ln in links if "inactive" not in ln.lower()]
+                link_ok = len(active) > 0
+                self.report_subtest(
+                    f"gpu{gpu_id}_nvlink",
+                    link_ok,
+                    f"GPU {gpu_id}: {len(active)} active link(s)",
+                )
+
+            if expected_gpus and len(gpu_links) < expected_gpus:
+                self.report_subtest(
+                    "gpu_count",
+                    False,
+                    f"NVLink on {len(gpu_links)} GPUs, expected {expected_gpus}",
+                )
+
+            # Get topology matrix for context
+            exit_code, stdout, _ = run_ssh_command(ssh, "nvidia-smi topo -m 2>/dev/null")
+            if exit_code == 0 and stdout.strip():
+                self.report_subtest("topology", True, "Topology matrix available")
+                self.log.info(f"GPU topology:\n{stdout.strip()}")
+
+            ssh.close()
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"NVLink subtests failed: {', '.join(failed)}")
+            elif inactive_links:
+                self.set_failed(f"Inactive NVLink links detected: {'; '.join(inactive_links)}")
+            else:
+                self.set_passed(f"NVLink check on {host} OK ({len(gpu_links)} GPUs)")
+
+        except Exception as e:
+            self.set_failed(f"NVLink check failed: {e}")
+
+
+class SshInfiniBandCheck(BaseValidation):
+    """Validate InfiniBand interfaces via SSH.
+
+    Checks that IB ports are present and in Active state using ``ibstat``.
+
+    Config:
+        host, key_file, user: SSH connection details
+        expected_ports (int): Expected number of active IB ports (optional)
+    """
+
+    description: ClassVar[str] = "InfiniBand interface status via SSH"
+    timeout: ClassVar[int] = 120
+    markers: ClassVar[list[str]] = ["ssh", "network"]
+
+    def run(self) -> None:
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        expected_ports = self.config.get("expected_ports")
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            # Check if ibstat is available
+            exit_code, stdout, _ = run_ssh_command(ssh, "ibstat 2>/dev/null")
+            if exit_code != 0 or not stdout.strip():
+                self.report_subtest("infiniband", True, "InfiniBand not available (OK if not expected)")
+                self.set_passed(f"InfiniBand not available on {host} (skipped)")
+                ssh.close()
+                return
+
+            # Parse ibstat output for CA (Channel Adapter) and port status
+            # Format: "CA 'mlx5_0'" ... "Port 1:" ... "State: Active"
+            current_ca = None
+            current_port = None
+            active_ports = 0
+            total_ports = 0
+            for line in stdout.strip().splitlines():
+                ca_match = re.match(r"\s*CA\s+'(\S+)'", line)
+                port_match = re.match(r"\s*Port\s+(\d+):", line)
+                state_match = re.match(r"\s*State:\s+(\S+)", line)
+
+                if ca_match:
+                    current_ca = ca_match.group(1)
+                elif port_match:
+                    current_port = port_match.group(1)
+                    total_ports += 1
+                elif state_match and current_ca and current_port:
+                    state = state_match.group(1)
+                    is_active = state == "Active"
+                    if is_active:
+                        active_ports += 1
+                    self.report_subtest(
+                        f"{current_ca}_port{current_port}",
+                        is_active,
+                        f"{current_ca} port {current_port}: {state}",
+                    )
+
+            if total_ports == 0:
+                self.report_subtest("ib_ports", False, "No IB ports found")
+                self.set_failed(f"No InfiniBand ports found on {host}")
+                ssh.close()
+                return
+
+            if expected_ports and active_ports < expected_ports:
+                self.report_subtest(
+                    "port_count",
+                    False,
+                    f"{active_ports} active ports, expected {expected_ports}",
+                )
+
+            ssh.close()
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"InfiniBand subtests failed: {', '.join(failed)}")
+            else:
+                self.set_passed(f"InfiniBand check on {host} OK ({active_ports}/{total_ports} ports active)")
+
+        except Exception as e:
+            self.set_failed(f"InfiniBand check failed: {e}")
+
+
+class SshEthernetCheck(BaseValidation):
+    """Validate network interfaces and connectivity via SSH.
+
+    Checks that expected network interfaces are up and optionally
+    verifies connectivity to a target host via ping.
+
+    Config:
+        host, key_file, user: SSH connection details
+        expected_interfaces (list[str]): Interface names to check (optional, e.g. ["eth0", "ens5"])
+        ping_target (str): Host to ping for connectivity check (optional)
+    """
+
+    description: ClassVar[str] = "Ethernet interfaces and connectivity via SSH"
+    timeout: ClassVar[int] = 120
+    markers: ClassVar[list[str]] = ["ssh", "network"]
+
+    def run(self) -> None:
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            self.set_failed("paramiko not installed")
+            return
+
+        ssh_cfg = get_ssh_config(self.config, self.config.get("inventory", {}))
+        host = ssh_cfg["ssh_host"]
+        user = ssh_cfg["ssh_user"]
+        key_path = ssh_cfg["ssh_key_path"]
+
+        if not host or not key_path:
+            self.set_failed("Missing host or key_file")
+            return
+
+        expected_interfaces = self.config.get("expected_interfaces", [])
+        ping_target = self.config.get("ping_target")
+
+        try:
+            ssh = get_ssh_client(host, user, key_path, timeout=60)
+
+            # List all UP interfaces
+            exit_code, stdout, _ = run_ssh_command(
+                ssh,
+                "ip -o link show up | awk -F': ' '{print $2}' | grep -v lo",
+            )
+            if exit_code != 0:
+                self.set_failed(f"Cannot list network interfaces on {host}")
+                ssh.close()
+                return
+
+            up_interfaces = [iface.strip() for iface in stdout.strip().splitlines() if iface.strip()]
+            self.report_subtest(
+                "interfaces_up",
+                len(up_interfaces) > 0,
+                f"{len(up_interfaces)} interface(s) up: {', '.join(up_interfaces[:10])}",
+            )
+
+            # Check expected interfaces if specified
+            for iface in expected_interfaces:
+                found = iface in up_interfaces
+                self.report_subtest(
+                    f"iface_{iface}",
+                    found,
+                    f"{iface}: {'UP' if found else 'NOT FOUND'}",
+                )
+
+            # Get interface details (IP addresses)
+            exit_code, stdout, _ = run_ssh_command(
+                ssh,
+                "ip -o addr show | grep -v '127.0.0.1' | grep -v '::1' | awk '{print $2, $3, $4}'",
+            )
+            if exit_code == 0 and stdout.strip():
+                addr_idx = 0
+                for line in stdout.strip().splitlines()[:10]:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        iface, family, addr = parts[0], parts[1], parts[2]
+                        self.report_subtest(
+                            f"addr_{addr_idx}_{iface}",
+                            True,
+                            f"{iface} ({family}): {addr}",
+                        )
+                        addr_idx += 1
+
+            # Ping test if target specified
+            if ping_target:
+                exit_code, stdout, _ = run_ssh_command(ssh, f"ping -c 3 -W 5 {ping_target} 2>&1")
+                ping_ok = exit_code == 0 and "0% packet loss" in stdout
+                self.report_subtest(
+                    "ping",
+                    ping_ok,
+                    f"Ping {ping_target}: {'OK' if ping_ok else 'FAILED'}",
+                )
+
+            ssh.close()
+
+            failed = get_failed_subtests(self._subtest_results)
+            if failed:
+                self.set_failed(f"Ethernet subtests failed: {', '.join(failed)}")
+            else:
+                self.set_passed(f"Ethernet check on {host} OK ({len(up_interfaces)} interfaces up)")
+
+        except Exception as e:
+            self.set_failed(f"Ethernet check failed: {e}")
 
 
 class SshContainerRuntimeCheck(BaseValidation):
