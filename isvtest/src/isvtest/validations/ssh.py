@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     import paramiko
 
+from isvtest.core.ngc import get_ngc_api_key
 from isvtest.core.ssh import (
     get_failed_subtests,
     get_ssh_client,
@@ -1771,7 +1772,7 @@ class SshContainerRuntimeCheck(BaseValidation):
         host = ssh_cfg["ssh_host"]
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
-        ngc_api_key = self.config.get("ngc_api_key", os.environ.get("NGC_NIM_API_KEY", ""))
+        ngc_api_key = self.config.get("ngc_api_key", get_ngc_api_key())
 
         if not host or not key_path:
             self.set_failed("Missing host or key_file")
@@ -1811,7 +1812,7 @@ class SshContainerRuntimeCheck(BaseValidation):
                 login_ok = "Succeeded" in stdout
                 self.report_subtest("ngc_login", login_ok, "NGC login successful" if login_ok else "NGC login failed")
             else:
-                self.report_subtest("ngc_login", True, "NGC_NIM_API_KEY not provided (skipped)")
+                self.report_subtest("ngc_login", True, "NGC_API_KEY not provided (skipped)")
 
             ssh.close()
             self.set_passed("Container runtime check passed")

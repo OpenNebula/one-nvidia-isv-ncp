@@ -23,6 +23,17 @@ NGC_IMAGE_SECRET_NAME = "ngc-image-secret"
 NGC_API_SECRET_NAME = "ngc-api-secret"
 
 
+def get_ngc_api_key() -> str:
+    """Read the NGC API key from environment variables.
+
+    Checks NGC_API_KEY first, then NGC_NIM_API_KEY as a legacy fallback.
+
+    Returns:
+        The API key string, or empty string if neither variable is set.
+    """
+    return os.environ.get("NGC_API_KEY", "") or os.environ.get("NGC_NIM_API_KEY", "")
+
+
 def get_kubectl_base() -> str:
     """Get the kubectl base command as a shell-safe string.
 
@@ -42,16 +53,16 @@ def ensure_ngc_secrets(namespace: str, ngc_api_key: str | None = None) -> tuple[
 
     Args:
         namespace: Kubernetes namespace.
-        ngc_api_key: NGC API key. If None, reads from NGC_NIM_API_KEY environment variable.
+        ngc_api_key: NGC API key. If None, reads via get_ngc_api_key().
 
     Returns:
         Tuple of (success, error_message). If success is True, error_message is empty.
     """
     if ngc_api_key is None:
-        ngc_api_key = os.environ.get("NGC_NIM_API_KEY")
+        ngc_api_key = get_ngc_api_key() or None
 
     if not ngc_api_key:
-        return False, "NGC_NIM_API_KEY not set"
+        return False, "NGC_API_KEY not set"
 
     kubectl_parts = get_kubectl_command()
 

@@ -17,6 +17,7 @@ import typer
 from isvtest.config.loader import ConfigLoader
 from isvtest.core import runners as reframe_runner
 from isvtest.core.logger import setup_logger
+from isvtest.tests.test_validations import ADAPTER_HANDLED_CATEGORIES
 
 logger = setup_logger()
 
@@ -153,6 +154,17 @@ def run_validations_via_pytest(
         # Get detailed results captured during test execution
         results = get_validation_results()
 
+        if not results and extra_pytest_args:
+            k_filters = [
+                extra_pytest_args[i + 1]
+                for i, a in enumerate(extra_pytest_args)
+                if a == "-k" and i + 1 < len(extra_pytest_args)
+            ]
+            if k_filters:
+                logger.warning(
+                    f"No tests matched -k '{k_filters[0]}' — check spelling or run without -k to see available tests"
+                )
+
         return exit_code, results
 
     finally:
@@ -196,6 +208,9 @@ def _transform_validations_for_pytest(
     result = []
 
     for category, category_config in validations.items():
+        if category in ADAPTER_HANDLED_CATEGORIES:
+            continue
+
         # Determine format: group defaults or list
         if isinstance(category_config, dict) and "checks" in category_config:
             # Group defaults format
