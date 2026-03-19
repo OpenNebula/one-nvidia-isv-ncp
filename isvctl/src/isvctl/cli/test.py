@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Annotated, TextIO
 
 import typer
+import yaml
 from isvtest.catalog import build_catalog, get_catalog_version
 
 from isvctl.cli import setup_logging
@@ -188,13 +189,29 @@ def run(
     if color:
         extra_pytest_args.extend([f"--color={color}"])
 
-    # Merge all YAML files
-    typer.echo(f"Merging {len(config_files)} configuration file(s)...")
+    # Load and merge YAML files (resolving import: directives)
     try:
         merged_config = merge_yaml_files([str(p) for p in config_files], set_values or [])
     except Exception as e:
-        typer.echo(f"Failed to merge configuration files: {e}", err=True)
+        typer.echo(f"Failed to load configuration: {e}", err=True)
         raise typer.Exit(code=1)
+
+    # Count imports by parsing each file's top-level keys
+    import_count = 0
+    for p in config_files:
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "import" in data:
+                import_count += 1
+        except Exception:
+            pass
+    parts = []
+    if len(config_files) > 1:
+        parts.append(f"{len(config_files)} files")
+    if import_count:
+        parts.append(f"{import_count} import{'s' if import_count > 1 else ''}")
+    if parts:
+        typer.echo(f"Loaded configuration ({', '.join(parts)}).")
 
     # Validate against schema
     typer.echo("Validating configuration...")
@@ -279,7 +296,9 @@ def run(
 
     # Run orchestration with log file capture (like deploy run uses `tee pytest-output.log`)
     orchestrator = Orchestrator(config, working_dir=effective_working_dir)
-    log_file_path = effective_working_dir / "pytest-output.log"
+    output_dir = effective_working_dir / "_output"
+    output_dir.mkdir(exist_ok=True)
+    log_file_path = output_dir / "pytest-output.log"
 
     # Build test catalog early so it runs inside the TeeWriter context
     # (avoids logging errors from stale stream references after the log file closes)
@@ -303,8 +322,6 @@ def run(
                     catalog_entries = build_catalog()
                     catalog_version = get_catalog_version()
                     typer.echo(f"Built test catalog: {len(catalog_entries)} tests (version: {catalog_version})")
-                    output_dir = Path("_output")
-                    output_dir.mkdir(parents=True, exist_ok=True)
                     catalog_path = output_dir / "test_catalog.json"
                     catalog_path.write_text(
                         json.dumps({"isvTestVersion": catalog_version, "entries": catalog_entries}, indent=2)
@@ -325,10 +342,12 @@ def run(
     # Update test run after tests complete
     if upload_results and test_run_id and lab_id:
         typer.echo("Uploading test results to ISV Lab Service...")
-        # Look for junit XML in current directory or working directory
-        junit_path = Path("junit-validation.xml")
+        # Look for junit XML in _output, working directory, or current directory
+        junit_path = output_dir / "junit-validation.xml"
         if not junit_path.exists():
             junit_path = effective_working_dir / "junit-validation.xml"
+        if not junit_path.exists():
+            junit_path = Path("junit-validation.xml")
 
         if update_test_run(
             lab_id=lab_id,
