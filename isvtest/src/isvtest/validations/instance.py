@@ -173,7 +173,7 @@ class InstanceStopCheck(BaseValidation):
     """
 
     description: ClassVar[str] = "Check instance stopped successfully without being destroyed"
-    markers: ClassVar[list[str]] = ["vm"]
+    markers: ClassVar[list[str]] = ["vm", "bare_metal"]
 
     def run(self) -> None:
         step_output = self.config.get("step_output", {})
@@ -215,7 +215,7 @@ class InstanceStartCheck(BaseValidation):
     """
 
     description: ClassVar[str] = "Check stopped instance started successfully"
-    markers: ClassVar[list[str]] = ["vm"]
+    markers: ClassVar[list[str]] = ["vm", "bare_metal"]
 
     def run(self) -> None:
         step_output = self.config.get("step_output", {})
@@ -241,6 +241,49 @@ class InstanceStartCheck(BaseValidation):
             return
 
         self.set_passed(f"Instance {instance_id} started successfully (state={state})")
+
+
+class InstanceTagCheck(BaseValidation):
+    """Validate that user-defined tags are present on an instance.
+
+    Config:
+        step_output: The describe_tags step output
+        required_keys: List of tag keys that must be present (default: [])
+
+    Step output:
+        instance_id: Instance identifier
+        tags: Dict of tag key→value pairs
+        tag_count: Number of tags
+    """
+
+    description: ClassVar[str] = "Check instance tags are present"
+    markers: ClassVar[list[str]] = ["vm"]
+
+    def run(self) -> None:
+        step_output = self.config.get("step_output", {})
+        required_keys = self.config.get("required_keys", [])
+
+        instance_id = step_output.get("instance_id")
+        if not instance_id:
+            self.set_failed("No 'instance_id' in step output")
+            return
+
+        tags = step_output.get("tags")
+        if tags is None:
+            self.set_failed(f"No 'tags' in step output for {instance_id}")
+            return
+
+        if not tags:
+            self.set_failed(f"Instance {instance_id} has no tags")
+            return
+
+        missing = [k for k in required_keys if k not in tags]
+        if missing:
+            self.set_failed(f"Instance {instance_id} missing required tags: {missing}")
+            return
+
+        tag_count = step_output.get("tag_count", len(tags))
+        self.set_passed(f"Instance {instance_id} has {tag_count} tag(s): {list(tags.keys())}")
 
 
 class InstanceListCheck(BaseValidation):
@@ -300,69 +343,3 @@ class InstanceListCheck(BaseValidation):
         if target and found_target:
             msg += f", target '{target}' found"
         self.set_passed(msg)
-
-
-class InstanceStopCheck(BaseValidation):
-    """Validate instance stopped successfully without being destroyed.
-
-    Config:
-        step_output: The step output to check
-
-    Step output:
-        instance_id: Instance identifier
-        stop_initiated: Whether the stop API call succeeded
-        state: Must be "stopped"
-    """
-
-    description: ClassVar[str] = "Check instance stopped successfully without being destroyed"
-    markers: ClassVar[list[str]] = ["bare_metal"]
-
-    def run(self) -> None:
-        step_output = self.config.get("step_output", {})
-        instance_id = step_output.get("instance_id")
-        if not instance_id:
-            self.set_failed("No 'instance_id' in step output")
-            return
-        if not step_output.get("stop_initiated", False):
-            self.set_failed(f"Stop was not initiated for {instance_id}")
-            return
-        state = step_output.get("state")
-        if state != "stopped":
-            self.set_failed(f"Instance {instance_id} state: expected stopped, got {state}")
-            return
-        self.set_passed(f"Instance {instance_id} stopped successfully (state={state})")
-
-
-class InstanceStartCheck(BaseValidation):
-    """Validate stopped instance started successfully.
-
-    Config:
-        step_output: The step output to check
-
-    Step output:
-        instance_id: Instance identifier
-        start_initiated: Whether the start API call succeeded
-        state: Must be "running"
-        ssh_ready: Whether SSH is reachable post-start
-    """
-
-    description: ClassVar[str] = "Check stopped instance started successfully"
-    markers: ClassVar[list[str]] = ["bare_metal"]
-
-    def run(self) -> None:
-        step_output = self.config.get("step_output", {})
-        instance_id = step_output.get("instance_id")
-        if not instance_id:
-            self.set_failed("No 'instance_id' in step output")
-            return
-        if not step_output.get("start_initiated", False):
-            self.set_failed(f"Start was not initiated for {instance_id}")
-            return
-        state = step_output.get("state")
-        if state != "running":
-            self.set_failed(f"Instance {instance_id} not running after start: {state}")
-            return
-        if not step_output.get("ssh_ready", False):
-            self.set_failed(f"SSH not ready after start for {instance_id}")
-            return
-        self.set_passed(f"Instance {instance_id} started successfully (state={state})")
