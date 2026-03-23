@@ -1,7 +1,15 @@
-.PHONY: help pre-commit build test coverage clean lint format install bump-patch bump-fix bump-minor bump-feat bump-major bump bump-check
+.PHONY: help pre-commit build test coverage clean lint format install bump-patch bump-fix bump-minor bump-feat bump-major bump bump-check \
+	security-trivy security-trivy-detail security-trufflehog ci-security
 
 PACKAGES := isvctl isvreporter isvtest
 BUMP_SCRIPT := scripts/bump-version.py
+
+# Align with .github/workflows/ci.yaml security-trivy-scan (filesystem scan). Requires Docker.
+TRIVY_IMAGE ?= aquasec/trivy:latest
+TRUFFLEHOG_IMAGE ?= trufflesecurity/trufflehog:latest
+SECURITY_SKIP_DIRS := .git,dist,htmlcov,.pytest_cache,.ruff_cache,.venv,node_modules,vendor,.terraform
+# SARIF path written by CI dsx trivy-scan / aquasecurity/trivy-action (default filename).
+TRIVY_SARIF ?= vulnerability-scan-results.sarif
 
 help: ## Show this help message
 	@echo "Available targets:"
@@ -34,6 +42,32 @@ format: ## Format code with ruff on all packages
 		echo "Formatting $$pkg..."; \
 		(cd $$pkg && uvx ruff format src/) || exit 1; \
 	done
+
+security-trivy: ## Trivy fs scan (HIGH/CRITICAL; Docker). Writes $(TRIVY_SARIF), prints per-finding summary; fails on un-ignored findings
+	@command -v docker >/dev/null 2>&1 || { echo "docker not found; install Docker to run local security scans"; exit 1; }
+	docker run --rm -v "$(CURDIR):/repo" -w /repo $(TRIVY_IMAGE) fs \
+		--severity HIGH,CRITICAL \
+		--ignore-unfixed \
+		--skip-dirs "$(SECURITY_SKIP_DIRS)" \
+		--ignorefile /repo/.trivyignore.yaml \
+		--scanners vuln,secret,misconfig,license \
+		--exit-code 1 \
+		--format sarif \
+		--output "/repo/$(TRIVY_SARIF)" \
+		/repo
+	@echo ""
+	@echo "=== Per-finding summary (same as: make security-trivy-detail) ==="
+	@$(MAKE) security-trivy-detail
+
+security-trivy-detail: ## List each finding from $(TRIVY_SARIF) (jq). Run after security-trivy or CI; GITHUB_STEP_SUMMARY appends in Actions
+	@./scripts/trivy-sarif-summary.sh "$(TRIVY_SARIF)"
+
+security-trufflehog: ## Run TruffleHog secret scan (Docker; verified/unknown, --only-verified). Exits non-zero if verified secrets are found
+	@command -v docker >/dev/null 2>&1 || { echo "docker not found; install Docker to run local security scans"; exit 1; }
+	docker run --rm -v "$(CURDIR):/work" -w /work $(TRUFFLEHOG_IMAGE) filesystem /work \
+		--results=verified,unknown --only-verified --fail
+
+ci-security: security-trivy security-trufflehog ## Run local equivalents of CI Trivy + TruffleHog (not CodeQL; use GitHub Actions or install CodeQL CLI)
 
 test: ## Run tests for all packages
 	@for pkg in $(PACKAGES); do \
