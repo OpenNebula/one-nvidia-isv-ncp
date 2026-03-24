@@ -9,7 +9,7 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-"""Retrieve serial console output from an AWS EC2 VM instance (read-only).
+"""Retrieve serial console output from an AWS bare-metal EC2 instance (read-only).
 
 Usage:
     python serial_console.py --instance-id i-xxx --region us-west-2
@@ -29,13 +29,13 @@ from common.serial_console import run_serial_console_check
 
 @handle_aws_errors
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Get EC2 VM serial console output")
+    parser = argparse.ArgumentParser(description="Get EC2 bare-metal serial console output")
     parser.add_argument("--instance-id", required=True, help="EC2 instance ID")
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-west-2"))
     args = parser.parse_args()
 
     ec2 = boto3.client("ec2", region_name=args.region)
-    _, exit_code = run_serial_console_check(ec2, args.instance_id, platform="vm")
+    _, exit_code = run_serial_console_check(ec2, args.instance_id, platform="bm")
     return exit_code
 
 

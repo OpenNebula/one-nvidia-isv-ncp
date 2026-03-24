@@ -16,6 +16,7 @@ Validations for EC2 instances, virtual machines, and compute resources.
 from typing import ClassVar
 
 from isvtest.core.validation import BaseValidation
+from isvtest.validations.generic import check_operations_passed
 
 
 class InstanceStateCheck(BaseValidation):
@@ -305,7 +306,7 @@ class SerialConsoleCheck(BaseValidation):
     """
 
     description: ClassVar[str] = "Check serial console access"
-    markers: ClassVar[list[str]] = ["vm"]
+    markers: ClassVar[list[str]] = ["vm", "bm"]
 
     def run(self) -> None:
         step_output = self.config.get("step_output", {})
@@ -337,6 +338,54 @@ class SerialConsoleCheck(BaseValidation):
             )
 
         self.set_passed(f"Serial console available for {instance_id} ({', '.join(details)})")
+
+
+class TopologyPlacementCheck(BaseValidation):
+    """Validate topology-based placement support for an instance.
+
+    Checks that the platform supports placement groups (or equivalent
+    topology-aware scheduling) and that all placement operations passed.
+    Delegates operations checking to ``CrudOperationsCheck``.
+
+    Config:
+        step_output: The topology_placement step output
+
+    Step output:
+        placement_supported: Whether placement groups are supported
+        availability_zone: Instance availability zone
+        placement_group: Name of the test placement group
+        placement_strategy: Placement strategy (e.g., cluster)
+        operations: Dict of operation results
+    """
+
+    description: ClassVar[str] = "Check topology-based placement support"
+    markers: ClassVar[list[str]] = ["bm"]
+
+    def run(self) -> None:
+        step_output = self.config.get("step_output", {})
+
+        instance_id = step_output.get("instance_id")
+        if not instance_id:
+            self.set_failed("No 'instance_id' in step output")
+            return
+
+        placement_supported = step_output.get("placement_supported", False)
+        az = step_output.get("availability_zone", "")
+        strategy = step_output.get("placement_strategy", "")
+
+        if not placement_supported:
+            error = step_output.get("error", "placement not supported")
+            self.set_failed(f"Topology placement not supported for {instance_id}: {error}")
+            return
+
+        ops = step_output.get("operations", {})
+        _, failed = check_operations_passed(ops)
+        if failed:
+            self.set_failed(f"Placement operations failed: {', '.join(failed)}")
+            return
+
+        details = [f"AZ={az}", f"strategy={strategy}"]
+        self.set_passed(f"Topology placement supported for {instance_id} ({', '.join(details)})")
 
 
 class InstanceListCheck(BaseValidation):
