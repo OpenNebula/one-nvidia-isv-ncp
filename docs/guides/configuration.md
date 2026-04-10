@@ -129,15 +129,19 @@ tests:
   # Centralized validations grouped by category
   validations:
     network:
-      - NetworkProvisionedCheck:
-          step: create_network
-      - StepSuccessCheck:
-          step: test_connectivity
-          check_success: true
+      step: create_network
+      checks:
+        NetworkProvisionedCheck: {}
+
+    connectivity:
+      step: test_connectivity
+      checks:
+        StepSuccessCheck: {}
 
     teardown_checks:
-      - StepSuccessCheck:
-          step: teardown
+      step: teardown
+      checks:
+        StepSuccessCheck: {}
 ```
 
 ### Platform Configuration
@@ -190,20 +194,32 @@ Each step defines a command to execute:
 
 ### Validation Configuration
 
-Validations are centralized in `tests.validations`, grouped by category:
+Validations are centralized in `tests.validations`, grouped by category. Each group binds to a step and lists checks as a dict:
 
 ```yaml
 tests:
   validations:
-    # Category name (any meaningful name)
+    # Group name (any meaningful name)
     network:
-      - NetworkProvisionedCheck:
-          step: create_network
+      step: create_network       # Step whose JSON output is checked
+      checks:
+        NetworkProvisionedCheck: {}
 
-    # Validations can specify when to run
     teardown_checks:
-      - StepSuccessCheck:
-          step: teardown
+      step: teardown
+      checks:
+        StepSuccessCheck: {}
+```
+
+For Kubernetes/Slurm configs where validations don't bind to individual step outputs, the `step:` field is omitted:
+
+```yaml
+tests:
+  validations:
+    kubernetes:
+      checks:
+        K8sNodeCountCheck:
+          count: "{{steps.setup.kubernetes.node_count}}"
 ```
 
 **Validation Timing (`phase`):**
@@ -222,21 +238,21 @@ A validation check can be run multiple times with different parameters by append
 validations:
   k8s_workloads:
     checks:
-      - K8sNimHelmWorkload-1b:
-          model: "meta/llama-3.2-1b-instruct"
-          gpu_count: 1
-          timeout: 900
-      - K8sNimHelmWorkload-3b:
-          model: "meta/llama-3.2-3b-instruct"
-          gpu_count: 4
-          timeout: 1800
+      K8sNimHelmWorkload-1b:
+        model: "meta/llama-3.2-1b-instruct"
+        gpu_count: 1
+        timeout: 900
+      K8sNimHelmWorkload-3b:
+        model: "meta/llama-3.2-3b-instruct"
+        gpu_count: 4
+        timeout: 1800
 
   slurm:
     checks:
-      - SlurmPartition-cpu:
-          partition_name: "cpu"
-      - SlurmPartition-gpu:
-          partition_name: "gpu"
+      SlurmPartition-cpu:
+        partition_name: "cpu"
+      SlurmPartition-gpu:
+        partition_name: "gpu"
 ```
 
 The part before the dash must match an existing validation class name (e.g., `K8sNimHelmWorkload`, `SlurmPartition`). The suffix after the dash is a label -- it can be any descriptive string. Each variant runs as a separate test case with its own parameters and appears independently in test results and coverage.
@@ -246,6 +262,31 @@ The part before the dash must match an existing validation class name (e.g., `K8
 - Validation class names **cannot** contain dashes, so the first dash always marks the start of a variant suffix.
 - The suffix is free-form: `K8sNimHelmWorkload-small`, `SlurmPartition-cpu`, `SlurmGpuAllocation-1gpu` are all valid.
 - Each variant is a distinct test entry in coverage tracking.
+
+## Import and Override
+
+Provider configs can import a canonical test suite and override command definitions while inheriting validations (unless explicitly overridden):
+
+```yaml
+# isvctl/configs/providers/my-isv/vm.yaml
+import: ../../tests/vm.yaml
+
+commands:
+  vm:
+    steps:
+      - name: launch_instance
+        command: "python3 ../../stubs/my-isv/vm/launch_instance.py"
+      - name: stop_instance
+        command: "python3 ../../stubs/my-isv/vm/stop_instance.py"
+      # ... list the full set of steps you need
+
+tests:
+  settings:
+    region: "us-east-1"
+    instance_type: "gpu.large"
+```
+
+The import path is relative to the importing file. The imported config provides the base step list, phases, and validations. Nested dictionaries (like `tests.settings`) are deep-merged, but list fields (like `commands.<platform>.steps`) are **replaced as a whole** — if you set `steps:` in the provider config, include the full desired list. See the [AWS reference implementation](../references/aws.md) for working examples.
 
 ## Template Variables
 
@@ -433,61 +474,105 @@ EOF
 
 ## Available Validations
 
-### Generic Validations
+For the full list of validations with descriptions and platform markers, see [isvtest package docs](../packages/isvtest.md#available-validations).
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `FieldExistsCheck` | `step`, `field` or `fields` | Check field(s) exist in output |
-| `FieldValueCheck` | `step`, `field`, `expected`, `operator` | Check field value (eq, gt, gte, lt, lte) |
-| `StepSuccessCheck` | `step` | Check `success: true` (auto-detects teardown) |
+Below is a summary by category.
 
-### Network Validations
+### Generic (`validations/generic.py`)
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `NetworkProvisionedCheck` | `step` | Check network created with ID |
-| `VpcCrudCheck` | `step` | Validate VPC CRUD operations |
-| `SubnetConfigCheck` | `step` | Validate subnet configuration |
-| `VpcIsolationCheck` | `step` | Validate VPC isolation |
-| `SecurityBlockingCheck` | `step` | Validate security blocking |
-| `NetworkConnectivityCheck` | `step` | Validate connectivity tests |
-| `TrafficFlowCheck` | `step` | Validate traffic flow tests |
+| Validation | Description |
+| ---------- | ----------- |
+| `StepSuccessCheck` | Check step completed successfully |
+| `FieldExistsCheck` | Check required fields exist in output |
+| `FieldValueCheck` | Check field has expected value (eq, gt, gte, lt, lte, contains, min/max) |
+| `CrudOperationsCheck` | Check all CRUD operations passed |
+| `SchemaValidation` | Validate output matches JSON schema |
 
-### Instance Validations
+### Instance (`validations/instance.py`)
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `InstanceStateCheck` | `step`, `expected_state` | Check instance state |
-| `InstanceCreatedCheck` | `step` | Check instance was created |
+| Validation | Description |
+| ---------- | ----------- |
+| `InstanceCreatedCheck` | Check instance was created |
+| `InstanceStateCheck` | Check instance is in expected state |
+| `InstanceListCheck` | Check instance list from VPC |
+| `InstanceTagCheck` | Check instance tags are present |
+| `InstanceStopCheck` | Check instance stopped successfully |
+| `InstanceStartCheck` | Check stopped instance started successfully |
+| `InstanceRebootCheck` | Check instance rebooted successfully |
+| `InstancePowerCycleCheck` | Check instance recovered from power-cycle |
+| `StableIdentifierCheck` | Check instance ID is stable across lifecycle events |
+| `SerialConsoleCheck` | Check serial console access |
+| `TopologyPlacementCheck` | Check topology-based placement support |
 
-### IAM Validations
+### Network (`validations/network.py`)
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `AccessKeyCreatedCheck` | `step` | Check access key was created |
-| `AccessKeyAuthenticatedCheck` | `step` | Check access key authenticated |
-| `AccessKeyDisabledCheck` | `step` | Check access key was disabled |
-| `AccessKeyRejectedCheck` | `step` | Check disabled key was rejected |
-| `TenantCreatedCheck` | `step` | Check tenant was created |
-| `TenantListedCheck` | `step` | Check tenant in list |
-| `TenantInfoCheck` | `step` | Check tenant info retrieved |
+| Validation | Description |
+| ---------- | ----------- |
+| `NetworkProvisionedCheck` | Check network was provisioned |
+| `VpcCrudCheck` | Check VPC CRUD operations |
+| `SubnetConfigCheck` | Check subnet configuration |
+| `VpcIsolationCheck` | Check VPC isolation |
+| `VpcIpConfigCheck` | Check VPC IP configuration |
+| `VpcPeeringCheck` | Check VPC peering |
+| `SgCrudCheck` | Check security group CRUD operations |
+| `SecurityBlockingCheck` | Check security blocking rules |
+| `FloatingIpCheck` | Check floating IP switch |
+| `LocalizedDnsCheck` | Check localized DNS |
+| `ByoipCheck` | Check BYOIP support |
+| `StablePrivateIpCheck` | Check private IP stability |
+| `NetworkConnectivityCheck` | Check network connectivity |
+| `TrafficFlowCheck` | Check traffic flow |
+| `DhcpIpManagementCheck` | Check DHCP/IP management via SSH |
 
-### Kubernetes Validations
+### Host (`validations/host.py`)
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `K8sNodeCountCheck` | `count` | Verify node count |
-| `K8sNodeReadyCheck` | - | Verify all nodes are Ready |
-| `K8sGpuOperatorPodsCheck` | `namespace` | Verify GPU Operator pods running |
-| `K8sGpuCapacityCheck` | `expected_per_node`, `expected_total` | Verify GPU capacity |
+| Validation | Description |
+| ---------- | ----------- |
+| `ConnectivityCheck` | Validates SSH connectivity |
+| `OsCheck` | Validates OS via SSH |
+| `CpuInfoCheck` | Validates CPU, NUMA topology, and PCI configuration |
+| `VcpuPinningCheck` | Validates vCPU pinning and NUMA affinity |
+| `PciBusCheck` | Validates PCI bus configuration for GPU devices |
+| `HostSoftwareCheck` | Validates kernel, libvirt, SBIOS, and NVIDIA drivers |
+| `GpuCheck` | Validates GPU via SSH |
+| `DriverCheck` | Validates kernel and NVIDIA drivers |
+| `ContainerRuntimeCheck` | Tests container runtime and NVIDIA Docker support |
+| `CloudInitCheck` | Validates cloud-init completed and metadata service is reachable |
+| `GpuStressCheck` | GPU stress test via SSH |
+| `NcclCheck` | NCCL AllReduce test via SSH |
+| `TrainingCheck` | DDP training workload via SSH |
+| `NvlinkCheck` | NVLink topology and status via SSH |
+| `InfiniBandCheck` | InfiniBand interface status via SSH |
+| `EthernetCheck` | Ethernet interfaces and connectivity via SSH |
 
-### Slurm Validations
+### NIM (`validations/nim.py`)
 
-| Validation | Parameters | Description |
-| ---------- | ---------- | ----------- |
-| `SlurmInfoAvailable` | - | Verify sinfo command works |
-| `SlurmPartition` | `partition_name`, `expected_nodes` | Verify partition exists |
-| `SlurmJobSubmission` | `partition` | Test job submission |
+| Validation | Description |
+| ---------- | ----------- |
+| `NimHealthCheck` | Validates NIM health endpoint |
+| `NimModelCheck` | Validates NIM model listing |
+| `NimInferenceCheck` | Validates NIM inference via chat completions |
+
+### Cluster (`validations/cluster.py`)
+
+| Validation | Description |
+| ---------- | ----------- |
+| `ClusterHealthCheck` | Check cluster is healthy |
+| `NodeCountCheck` | Check cluster node count matches expected |
+| `GpuOperatorInstalledCheck` | Check GPU operator installation |
+| `PerformanceCheck` | Check workload performance meets requirements |
+
+### IAM (`validations/iam.py`)
+
+| Validation | Description |
+| ---------- | ----------- |
+| `AccessKeyCreatedCheck` | Check access key was created |
+| `AccessKeyAuthenticatedCheck` | Check access key can authenticate |
+| `AccessKeyDisabledCheck` | Check access key was disabled |
+| `AccessKeyRejectedCheck` | Check disabled key is rejected |
+| `TenantCreatedCheck` | Check tenant was created |
+| `TenantListedCheck` | Check tenant appears in list |
+| `TenantInfoCheck` | Check tenant info retrieved |
 
 ## Test Markers
 
@@ -501,7 +586,7 @@ isvctl test run -f config.yaml -- -k "vpc_crud"
 isvctl test run -f config.yaml -- -m kubernetes
 ```
 
-Available markers: `bare_metal`, `kubernetes`, `slurm`, `gpu`, `network`, `hardware`, `software`, `workload`, `l2`, `slow`
+Available markers: `bare_metal`, `vm`, `kubernetes`, `slurm`, `gpu`, `network`, `ssh`, `security`, `iam`, `workload`, `slow`
 
 ## Related Documentation
 
