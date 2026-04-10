@@ -193,6 +193,43 @@ class InstancePowerCycleCheck(BaseValidation):
         self.set_passed(f"Instance {instance_id} recovered from power-cycle (state={state}{recovery_str})")
 
 
+class StableIdentifierCheck(BaseValidation):
+    """Validate that an instance ID persists across lifecycle events.
+
+    Compares the instance_id from a lifecycle step (stop, start, reboot,
+    power-cycle) against the original ID from launch to confirm it is
+    stable and did not change.
+
+    Config:
+        step_output: The lifecycle step output to check
+        reference_id: The original instance ID from launch (via Jinja2 template)
+
+    Step output:
+        instance_id: Instance identifier after the lifecycle event
+    """
+
+    description: ClassVar[str] = "Check instance ID is stable across lifecycle events"
+    markers: ClassVar[list[str]] = ["vm", "bare_metal"]
+
+    def run(self) -> None:
+        step_output = self.config.get("step_output", {})
+        reference_id = self.config.get("reference_id", "")
+
+        instance_id = step_output.get("instance_id")
+        if not instance_id:
+            self.set_failed("No 'instance_id' in step output")
+            return
+
+        if not reference_id:
+            self.set_failed("No 'reference_id' configured — cannot verify stability")
+            return
+
+        if instance_id == reference_id:
+            self.set_passed(f"Instance ID {instance_id} is stable")
+        else:
+            self.set_failed(f"Instance ID changed: expected {reference_id}, got {instance_id}")
+
+
 class InstanceCreatedCheck(BaseValidation):
     """Validate instance was created successfully.
 

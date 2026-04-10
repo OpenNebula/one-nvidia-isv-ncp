@@ -323,6 +323,8 @@ tests:
       step: start_instance
       checks:
         InstanceStartCheck: {}
+        StableIdentifierCheck:
+          reference_id: "{{steps.launch_instance.instance_id}}"
 
     start_ssh:
       step: start_instance
@@ -342,6 +344,8 @@ tests:
       checks:
         InstanceRebootCheck:
           max_uptime: 600
+        StableIdentifierCheck:
+          reference_id: "{{steps.launch_instance.instance_id}}"
 
     reboot_state:
       step: reboot_instance

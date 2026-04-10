@@ -56,6 +56,7 @@ from isvtest.validations.instance import (
     InstanceStateCheck,
     InstanceStopCheck,
     InstanceTagCheck,
+    StableIdentifierCheck,
 )
 from isvtest.validations.network import (
     ByoipCheck,
@@ -115,6 +116,7 @@ __all__ = [
     "SchemaValidation",
     "SecurityBlockingCheck",
     "SgCrudCheck",
+    "StableIdentifierCheck",
     "StablePrivateIpCheck",
     "StepSuccessCheck",
     "SubnetConfigCheck",
