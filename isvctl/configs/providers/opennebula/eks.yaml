@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# OpenNebula Kubernetes Cluster Validation Configuration
+# Provisions an OpenNebula GPU cluster, then runs the canonical
+# Kubernetes validation suite (imported from ../../tests/k8s.yaml).
+#
+# Usage:
+#   # Provision cluster and run tests
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/eks.yaml
+#
+#   # Run tests only (skip setup/teardown)
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/eks.yaml --phase test
+
+import: ../../tests/k8s.yaml
+
+version: "1.0"
+
+commands:
+  kubernetes:
+    steps:
+      - name: provision_cluster
+        phase: setup
+        command: "../../stubs/opennebula/eks/setup.sh"
+        timeout: 1800
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+
+      - name: teardown_cluster
+        phase: teardown
+        command: "../../stubs/opennebula/eks/teardown.sh"
+        timeout: 600
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+
+tests:
+  description: "OpenNebula Kubernetes GPU cluster validation"
