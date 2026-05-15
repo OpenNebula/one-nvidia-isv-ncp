@@ -15,7 +15,7 @@ set -eo pipefail
 
 CLUSTER_NAME="${ONE_CLUSTER_NAME:-isv-k8s-cluster}"
 KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube}"
-K8S_VERSION="v1.32.9"
+K8S_VERSION="v1.34.2"
 PUBLIC_NETWORK_ID=0
 PRIVATE_NETWORK_ID=1
 CONTROL_PLANE_FAMILY="general"
@@ -117,11 +117,19 @@ fi
 
 
 # Add GPU nodes
-oneks create group --cluster-id "$CLUSTER_ID" <<EOF
-gpu-nodegroup
-0
-$GPU_NODE_COUNT
+nodegroup_spec=$(mktemp)
+cat > "$nodegroup_spec" <<EOF
+{
+   "name": "gpu-nodegroup",
+   "family": "$NODEGROUP_FAMILY",
+   "flavour": "$NODEGROUP_FLAVOUR",
+   "user_inputs_values": {
+     "count": $GPU_NODE_COUNT
+   }
+}
 EOF
+
+oneks create group --cluster-id "$CLUSTER_ID" --file "$nodegroup_spec"
 wait_for_cluster "$CLUSTER_ID"
 
 EXPECTED_NODES=$(( GPU_NODE_COUNT + 1 ))
