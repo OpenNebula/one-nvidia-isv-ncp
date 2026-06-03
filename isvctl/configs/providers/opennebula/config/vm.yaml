@@ -12,9 +12,10 @@
 #   4. start_instance - pyone: Resumes VM
 #   5. reboot_instance - pyone: Reboots VM
 #   6. describe_instance - pyone: Describes current state, passes SSH info
-#   7. deploy_nim - paramiko: Deploys NIM container via SSH
-#   8. teardown_nim - paramiko: Stops NIM container via SSH
-#   9. teardown - pyone: Terminates VM
+#   7. nvidia_registry_preflight - paramiko: Logs in to NGC, checks CUDA probe tag
+#   8. deploy_nim - paramiko: Deploys NIM container via SSH
+#   9. teardown_nim - paramiko: Stops NIM container via SSH
+#   10. teardown - pyone: Terminates VM
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/vm.yaml
@@ -100,6 +101,21 @@ commands:
           - "{{ssh_user}}"
         timeout: 120
 
+      - name: nvidia_registry_preflight
+        phase: test
+        command: "python3 ../scripts/vm/nvidia_registry_preflight.py"
+        args:
+          - "--host"
+          - "{{steps.describe_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.describe_instance.key_file}}"
+          - "--user"
+          - "{{ssh_user}}"
+          - "--image"
+          - "{{cuda_probe_image}}"
+        timeout: 300
+        output_schema: generic
+
       - name: deploy_nim
         phase: test
         command: "python3 ../../shared/deploy_nim.py"
@@ -141,7 +157,8 @@ tests:
     template_id: "{{env.ONE_VM_TEMPLATE_ID | default('0')}}"  # Read from env var, default to 0
     key_file: "{{env.ONE_VM_KEY_FILE}}" # Needs to be exported manually during testing
     ssh_user: "root"  # OpenNebula template uses root for SSH access
+    cuda_probe_image: "nvcr.io/nvidia/cuda:13.0.0-base-ubuntu24.04"
     teardown_flag: "{{(env.ONE_VM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   exclude:
-    tests: ["CloudInitCheck", "InstanceSpecifiedKeyCheck"]
+    tests: ["CloudInitCheck"]
