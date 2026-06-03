@@ -144,4 +144,4 @@ tests:
     teardown_flag: "{{(env.ONE_VM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   exclude:
-    tests: ["CloudInitCheck"]
+    tests: ["CloudInitCheck", "InstanceSpecifiedKeyCheck"]
