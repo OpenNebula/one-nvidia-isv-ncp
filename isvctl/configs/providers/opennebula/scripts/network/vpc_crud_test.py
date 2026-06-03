@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import uuid
 from pathlib import Path
@@ -17,10 +16,6 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.network import (  # noqa: E402
-    DEFAULT_PHYDEV,
-    DEFAULT_SECURITY_GROUPS,
-    DEFAULT_VN_MAD,
-    DEFAULT_VXLAN_MODE,
     create_vnet,
     delete_vnet,
     get_one_server,
@@ -38,16 +33,15 @@ def update_vnet_template(one: Any, network_id: str, template: str) -> None:
 def main() -> int:
     """Run create/read/update/delete checks for an OpenNebula virtual network."""
     parser = argparse.ArgumentParser(description="Test OpenNebula virtual-network CRUD operations")
-    parser.add_argument("--region", default=os.environ.get("ONE_REGION", "opennebula"), help="Logical region label")
+    parser.add_argument("--region", required=True, help="Logical region label")
     parser.add_argument("--cidr", default="10.99.0.0/16", help="Network CIDR block")
-    parser.add_argument("--cluster-id", type=int, default=int(os.environ.get("ONE_CLUSTER_ID", "-1")))
-    parser.add_argument("--phydev", default=os.environ.get("ONE_VNET_PHYDEV", DEFAULT_PHYDEV))
-    parser.add_argument(
-        "--security-groups",
-        default=os.environ.get("ONE_VNET_SECURITY_GROUPS", DEFAULT_SECURITY_GROUPS),
-    )
-    parser.add_argument("--vn-mad", default=os.environ.get("ONE_VNET_MAD", DEFAULT_VN_MAD))
-    parser.add_argument("--vxlan-mode", default=os.environ.get("ONE_VNET_VXLAN_MODE", DEFAULT_VXLAN_MODE))
+    parser.add_argument("--cluster-id", type=int, default=-1)
+    parser.add_argument("--xmlrpc-url", required=True, help="OpenNebula XML-RPC endpoint")
+    parser.add_argument("--auth", required=True, help="OpenNebula auth token")
+    parser.add_argument("--phydev", required=True)
+    parser.add_argument("--security-groups", required=True)
+    parser.add_argument("--vn-mad", required=True)
+    parser.add_argument("--vxlan-mode", required=True)
     args = parser.parse_args()
 
     suffix = str(uuid.uuid4())[:8]
@@ -62,10 +56,12 @@ def main() -> int:
     network_id = None
 
     try:
-        one = get_one_server()
+        one = get_one_server(args.xmlrpc_url, args.auth)
 
         try:
             network = create_vnet(
+                xmlrpc_url=args.xmlrpc_url,
+                auth=args.auth,
                 name=vnet_name,
                 cidr=args.cidr,
                 subnet_count=1,
@@ -146,7 +142,7 @@ def main() -> int:
     finally:
         if network_id:
             try:
-                delete_vnet(get_one_server(), network_id)
+                delete_vnet(get_one_server(args.xmlrpc_url, args.auth), network_id)
             except Exception:
                 pass
 

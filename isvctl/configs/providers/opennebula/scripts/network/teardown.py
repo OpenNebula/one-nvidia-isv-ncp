@@ -21,7 +21,9 @@ def main() -> int:
     """Delete the shared OpenNebula network created during setup."""
     parser = argparse.ArgumentParser(description="Delete OpenNebula virtual network")
     parser.add_argument("--vpc-id", "--network-id", dest="network_id", required=True, help="Virtual network ID")
-    parser.add_argument("--region", default="opennebula", help="Logical region label")
+    parser.add_argument("--region", required=True, help="Logical region label")
+    parser.add_argument("--xmlrpc-url", required=True, help="OpenNebula XML-RPC endpoint")
+    parser.add_argument("--auth", required=True, help="OpenNebula auth token")
     parser.add_argument("--skip-destroy", action="store_true", help="Skip deletion")
     args = parser.parse_args()
 
@@ -41,7 +43,7 @@ def main() -> int:
         return 0
 
     try:
-        one = get_one_server()
+        one = get_one_server(args.xmlrpc_url, args.auth)
         if vnet_exists(one, args.network_id):
             delete_vnet(one, args.network_id)
             result["resources_deleted"].append(f"vnet:{args.network_id}")

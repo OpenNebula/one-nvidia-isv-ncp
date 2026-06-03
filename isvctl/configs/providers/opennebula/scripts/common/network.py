@@ -7,20 +7,11 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 import time
 from typing import Any
 
 
-DEFAULT_XMLRPC_URL = "http://localhost:2633/RPC2"
-DEFAULT_AUTH = "oneadmin:opennebula"
-DEFAULT_PHYDEV = "enP6p3s0np0"
-DEFAULT_SECURITY_GROUPS = "0"
-DEFAULT_VN_MAD = "vxlan"
-DEFAULT_VXLAN_MODE = "evpn"
-
-
-def get_one_server() -> Any:
+def get_one_server(xmlrpc_url: str, auth: str) -> Any:
     """Return an authenticated OpenNebula XML-RPC client."""
     # Lazy import lets callers return JSON errors when pyone is unavailable.
     try:
@@ -28,8 +19,6 @@ def get_one_server() -> Any:
     except ImportError as e:
         raise RuntimeError("pyone is not installed. Install pyone to run OpenNebula provider scripts.") from e
 
-    xmlrpc_url = os.environ.get("ONE_XMLRPC", DEFAULT_XMLRPC_URL)
-    auth = os.environ.get("ONE_AUTH", DEFAULT_AUTH)
     return pyone.OneServer(xmlrpc_url, session=auth)
 
 
@@ -179,6 +168,8 @@ def build_vnet_template(
 
 def create_vnet(
     *,
+    xmlrpc_url: str,
+    auth: str,
     name: str,
     cidr: str,
     subnet_count: int,
@@ -190,7 +181,7 @@ def create_vnet(
     zone: str,
 ) -> dict[str, Any]:
     """Create an OpenNebula VXLAN virtual network and return contract fields."""
-    one = get_one_server()
+    one = get_one_server(xmlrpc_url, auth)
     template = build_vnet_template(
         name=name,
         cidr=cidr,
