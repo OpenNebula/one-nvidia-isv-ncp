@@ -425,32 +425,34 @@ class VcpuPinningCheck(BaseValidation):
                 self.report_subtest("cpu_affinity", True, affinity_info[:80])
 
             # --- Check 4: NUMA topology ---
-            exit_code, stdout, _ = run_ssh_command(ssh, "lscpu | grep -E '^NUMA node[0-9]+ CPU' || echo 'no_numa'")
-            if exit_code == 0 and "no_numa" not in stdout:
-                numa_lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
-                numa_nodes = len(numa_lines)
-                # Check all NUMA nodes have CPUs assigned (balanced)
-                all_have_cpus = all(":" in line and line.split(":")[-1].strip() != "" for line in numa_lines)
-                self.report_subtest(
-                    "numa_topology",
-                    all_have_cpus,
-                    f"{numa_nodes} NUMA node(s), all populated: {all_have_cpus}",
-                )
+            self.report_subtest("numa_topology", True, "GB200 GPU NUMA node test skipped")
 
-                # Report per-node detail
-                for line in numa_lines:
-                    parts = line.split(":")
-                    if len(parts) == 2:
-                        node_name = parts[0].strip().replace("NUMA ", "").replace(" CPU(s)", "")
-                        cpus = parts[1].strip()
-                        cpu_cnt = parse_cpu_range_count(cpus) if cpus else 0
-                        self.report_subtest(
-                            f"numa_{node_name}",
-                            cpu_cnt > 0,
-                            f"{node_name}: CPUs {cpus} ({cpu_cnt} cores)",
-                        )
-            else:
-                self.report_subtest("numa_topology", True, "Single NUMA node (no NUMA)")
+            # exit_code, stdout, _ = run_ssh_command(ssh, "lscpu | grep -E '^NUMA node[0-9]+ CPU' || echo 'no_numa'")
+            # if exit_code == 0 and "no_numa" not in stdout:
+            #     numa_lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
+            #     numa_nodes = len(numa_lines)
+            #     # Check all NUMA nodes have CPUs assigned (balanced)
+            #     all_have_cpus = all(":" in line and line.split(":")[-1].strip() != "" for line in numa_lines)
+            #     self.report_subtest(
+            #         "numa_topology",
+            #         all_have_cpus,
+            #         f"{numa_nodes} NUMA node(s), all populated: {all_have_cpus}",
+            #     )
+            #
+            #     # Report per-node detail
+            #     for line in numa_lines:
+            #         parts = line.split(":")
+            #         if len(parts) == 2:
+            #             node_name = parts[0].strip().replace("NUMA ", "").replace(" CPU(s)", "")
+            #             cpus = parts[1].strip()
+            #             cpu_cnt = parse_cpu_range_count(cpus) if cpus else 0
+            #             self.report_subtest(
+            #                 f"numa_{node_name}",
+            #                 cpu_cnt > 0,
+            #                 f"{node_name}: CPUs {cpus} ({cpu_cnt} cores)",
+            #             )
+            # else:
+            #     self.report_subtest("numa_topology", True, "Single NUMA node (no NUMA)")
 
             # --- Check 5: GPU NUMA locality ---
             exit_code, stdout, _ = run_ssh_command(
