@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Network Validation Configuration
+#
+# Imports the provider-agnostic network validation suite and wires the first
+# three network checks to OpenNebula VXLAN virtual-network scripts:
+#   1. VPC CRUD
+#   2. Subnet configuration
+#   3. VPC isolation
+#
+# Other network checks are intentionally excluded until their OpenNebula scripts
+# are implemented.
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/network.yaml
+
+import:
+  - ../../../suites/network.yaml
+
+version: "1.0"
+
+commands:
+  network:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: create_network
+        phase: setup
+        command: "python3 ../scripts/network/create_vpc.py"
+        args:
+          - "--name"
+          - "isv-shared-vnet"
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.0.0.0/16"
+          - "--subnet-count"
+          - "2"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 300
+
+      # Test 1: VPC CRUD operations using an OpenNebula VXLAN virtual network.
+      - name: vpc_crud
+        phase: test
+        command: "python3 ../scripts/network/vpc_crud_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.99.0.0/16"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: vpc_crud
+
+      # Test 2: Subnet configuration using OpenNebula address ranges.
+      - name: subnet_config
+        phase: test
+        command: "python3 ../scripts/network/subnet_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.98.0.0/16"
+          - "--subnet-count"
+          - "4"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: subnet_config
+
+      # Test 3: VPC isolation between two separate VXLAN virtual networks.
+      - name: vpc_isolation
+        phase: test
+        command: "python3 ../scripts/network/isolation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr-a"
+          - "10.97.0.0/16"
+          - "--cidr-b"
+          - "10.96.0.0/16"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: vpc_isolation
+
+      # Remaining tests are excluded below until their OpenNebula scripts exist:
+      # sg_crud, security_blocking, connectivity_test, traffic_validation,
+      # vpc_ip_config, dhcp_ip_test, SG scoping, SDN logging/policy, BYOIP,
+      # stable/floating IP, DNS, peering, and fabric topology checks.
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/network/teardown.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--region"
+          - "{{region}}"
+          - "{{teardown_flag}}"
+        timeout: 300
+        output_schema: teardown
+
+tests:
+  cluster_name: "opennebula-network-validation"
+  description: "OpenNebula VXLAN network validation tests"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    phydev: "{{env.ONE_VNET_PHYDEV | default('enP6p3s0np0')}}"
+    security_groups: "{{env.ONE_VNET_SECURITY_GROUPS | default('0')}}"
+    vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
+    vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
+    base_template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('')}}"
+    teardown_flag: "{{(env.ONE_NETWORK_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  validations:
+    network:
+      checks:
+        SubnetConfigCheck:
+          step: subnet_config
+          min_subnets: 4
+          require_multi_az: false
+
+  exclude:
+    tests:
+      - SgCrudCheck
+      - SecurityBlockingCheck
+      - NetworkConnectivityCheck
+      - TrafficFlowCheck
+      - VpcIpConfigCheck
+      - DhcpIpManagementCheck
+      - SgWorkloadScopingCheck
+      - SgNodeScopingCheck
+      - SgSubnetScopingCheck
+      - SgServiceScopingCheck
+      - SgPortSecurityPolicyCheck
+      - SgPolicyPropagationTimingCheck
+      - SdnHardwareFaultLoggingCheck
+      - SdnLatencyPerfLoggingCheck
+      - SdnFilterAuditTrailCheck
+      - ByoipCheck
+      - StablePrivateIpCheck
+      - StableEgressIpCheck
+      - FloatingIpCheck
+      - LocalizedDnsCheck
+      - VpcPeeringCheck
+      - BackendSwitchFabricCheck
+      - NvlinkDomainCheck
