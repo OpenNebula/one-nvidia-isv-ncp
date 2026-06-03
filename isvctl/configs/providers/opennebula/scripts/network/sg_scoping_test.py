@@ -231,6 +231,14 @@ def _ar_security_group_ids(ar: Any) -> set[str]:
     return set()
 
 
+def _find_ar(vnet_info: Any, ar_id: str) -> Any:
+    """Return the requested address range from a virtual network."""
+    for ar in _vnet_ars(vnet_info):
+        if _ar_id(ar) == str(ar_id):
+            return ar
+    raise RuntimeError(f"Address range {ar_id} was not found")
+
+
 def _ar_has_sg(vnet_info: Any, ar_id: str, sg_id: str) -> bool:
     """Return whether an address range has a security group."""
     for ar in _vnet_ars(vnet_info):
@@ -266,27 +274,43 @@ def _wait_for_ar_security_group(
     return False
 
 
+def _ar_update_template(ar: Any, sg_id: str) -> str:
+    """Build a complete AR update template preserving the current address range fields."""
+    required_fields = ["AR_ID", "TYPE", "IP", "SIZE"]
+    lines = ["AR = ["]
+
+    for field in required_fields:
+        value = _get_field(ar, field)
+        if value in (None, ""):
+            raise RuntimeError(f"Address range {field} is missing and cannot be updated")
+        rendered = int(value) if field == "AR_ID" else quote(value)
+        lines.append(f"  {field} = {rendered},")
+
+    for field in ("MAC", "SHARED"):
+        value = _get_field(ar, field)
+        if value not in (None, ""):
+            lines.append(f"  {field} = {quote(value)},")
+
+    lines.append(f"  SECURITY_GROUPS = {quote(sg_id)}")
+    lines.append("]")
+    return "\n".join(lines)
+
+
 def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str) -> str:
     """Set security groups on a virtual-network address range and return the template form used."""
-    numeric_ar_id = int(ar_id)
+    vnet_info = one.vn.info(int(network_id))
+    ar = _find_ar(vnet_info, ar_id)
+    complete_ar_template = _ar_update_template(ar, sg_id)
     templates = [
+        ("complete-ar", complete_ar_template),
         (
             "ar-block",
             "\n".join(
                 [
                     "AR = [",
-                    f"  AR_ID = {numeric_ar_id},",
+                    f"  AR_ID = {int(ar_id)},",
                     f"  SECURITY_GROUPS = {quote(sg_id)}",
                     "]",
-                ]
-            ),
-        ),
-        (
-            "flat",
-            "\n".join(
-                [
-                    f"AR_ID = {numeric_ar_id}",
-                    f"SECURITY_GROUPS = {quote(sg_id)}",
                 ]
             ),
         ),
@@ -294,7 +318,10 @@ def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str
             "xml",
             (
                 "<TEMPLATE><AR>"
-                f"<AR_ID>{numeric_ar_id}</AR_ID>"
+                f"<AR_ID>{int(ar_id)}</AR_ID>"
+                f"<TYPE>{_get_field(ar, 'TYPE')}</TYPE>"
+                f"<IP>{_get_field(ar, 'IP')}</IP>"
+                f"<SIZE>{_get_field(ar, 'SIZE')}</SIZE>"
                 f"<SECURITY_GROUPS>{sg_id}</SECURITY_GROUPS>"
                 "</AR></TEMPLATE>"
             ),
