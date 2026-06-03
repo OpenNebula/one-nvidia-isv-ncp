@@ -11,6 +11,8 @@ import json
 import sys
 import time
 import uuid
+import xml.etree.ElementTree as ET
+import xmlrpc.client as xmlrpc_client
 from pathlib import Path
 from typing import Any
 
@@ -231,20 +233,56 @@ def _ar_security_group_ids(ar: Any) -> set[str]:
     return set()
 
 
-def _find_ar(vnet_info: Any, ar_id: str) -> Any:
-    """Return the requested address range from a virtual network."""
-    for ar in _vnet_ars(vnet_info):
-        if _ar_id(ar) == str(ar_id):
-            return ar
-    raise RuntimeError(f"Address range {ar_id} was not found")
-
-
 def _ar_has_sg(vnet_info: Any, ar_id: str, sg_id: str) -> bool:
     """Return whether an address range has a security group."""
     for ar in _vnet_ars(vnet_info):
         if _ar_id(ar) == str(ar_id):
             return str(sg_id) in _ar_security_group_ids(ar)
     return False
+
+
+def _raw_vnet_info_xml(args: argparse.Namespace, network_id: str) -> str:
+    """Return raw XML from the OpenNebula one.vn.info XML-RPC method."""
+    server = xmlrpc_client.ServerProxy(args.xmlrpc_url, allow_none=True)
+    response = server.one.vn.info(args.auth, int(network_id))
+    if isinstance(response, (list, tuple)):
+        if response and response[0] is True and len(response) > 1:
+            return str(response[1])
+        if response and response[0] is False and len(response) > 1:
+            raise RuntimeError(str(response[1]))
+    if isinstance(response, str):
+        return response
+    raise RuntimeError(f"Unexpected one.vn.info response: {response!r}")
+
+
+def _print_vnet_xml(args: argparse.Namespace, network_id: str, label: str) -> None:
+    """Print raw VNet XML to stderr for debugging."""
+    try:
+        xml_text = _raw_vnet_info_xml(args, network_id)
+    except Exception as e:
+        print(f"--- VNET XML {label}: failed to fetch network {network_id}: {e} ---", file=sys.stderr)
+        return
+
+    print(f"--- VNET XML {label}: network {network_id} ---", file=sys.stderr)
+    print(xml_text, file=sys.stderr)
+    print(f"--- END VNET XML {label}: network {network_id} ---", file=sys.stderr)
+
+
+def _xml_ar_has_sg(xml_text: str, ar_id: str, sg_id: str) -> bool:
+    """Return whether raw VNet XML shows a security group on an address range."""
+    root = ET.fromstring(xml_text)
+    for ar in root.findall("./AR_POOL/AR"):
+        ar_id_node = ar.find("AR_ID")
+        if ar_id_node is None or (ar_id_node.text or "").strip() != str(ar_id):
+            continue
+        sg_node = ar.find("SECURITY_GROUPS")
+        return str(sg_id) in _split_sg_ids(sg_node.text if sg_node is not None else None)
+    return False
+
+
+def _raw_ar_has_sg(args: argparse.Namespace, network_id: str, ar_id: str, sg_id: str) -> bool:
+    """Return whether raw VNet XML reports the SG on an address range."""
+    return _xml_ar_has_sg(_raw_vnet_info_xml(args, network_id), ar_id, sg_id)
 
 
 def _call_update_ar(one: Any, network_id: str, template: str) -> None:
@@ -256,18 +294,18 @@ def _call_update_ar(one: Any, network_id: str, template: str) -> None:
 
 
 def _wait_for_ar_security_group(
-    one: Any,
+    args: argparse.Namespace,
     network_id: str,
     ar_id: str,
     sg_id: str,
-    timeout: int = 10,
-    interval: int = 1,
+    timeout: int = 30,
+    interval: int = 2,
 ) -> bool:
-    """Wait until an address range reports a security group."""
+    """Wait until raw VNet XML reports a security group on an address range."""
     deadline = time.time() + timeout
 
     while time.time() < deadline:
-        if _ar_has_sg(one.vn.info(int(network_id)), ar_id, sg_id):
+        if _raw_ar_has_sg(args, network_id, ar_id, sg_id):
             return True
         time.sleep(interval)
 
@@ -275,7 +313,7 @@ def _wait_for_ar_security_group(
 
 
 def _ar_update_template(ar: Any, sg_id: str) -> str:
-    """Build a complete AR update template preserving the current address range fields."""
+    """Build a complete AR update template preserving current address range fields."""
     required_fields = ["AR_ID", "TYPE", "IP", "SIZE"]
     lines = ["AR = ["]
 
@@ -296,13 +334,20 @@ def _ar_update_template(ar: Any, sg_id: str) -> str:
     return "\n".join(lines)
 
 
-def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str) -> str:
-    """Set security groups on a virtual-network address range and return the template form used."""
-    vnet_info = one.vn.info(int(network_id))
-    ar = _find_ar(vnet_info, ar_id)
-    complete_ar_template = _ar_update_template(ar, sg_id)
+def _update_ar_security_groups(
+    one: Any,
+    args: argparse.Namespace,
+    network_id: str,
+    ar_id: str,
+    sg_id: str,
+) -> str:
+    """Set security groups on an AR using update_ar and return the template form used."""
+    matching_ars = [ar for ar in _vnet_ars(one.vn.info(int(network_id))) if _ar_id(ar) == str(ar_id)]
+    if not matching_ars:
+        raise RuntimeError(f"Address range {ar_id} was not found")
+    ar = matching_ars[0]
     templates = [
-        ("complete-ar", complete_ar_template),
+        ("complete-ar", _ar_update_template(ar, sg_id)),
         (
             "ar-block",
             "\n".join(
@@ -329,13 +374,18 @@ def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str
     ]
     errors = []
 
+    _print_vnet_xml(args, network_id, "before update_ar")
     for template_name, template in templates:
+        print(f"--- update_ar template {template_name} for network {network_id} AR {ar_id} ---", file=sys.stderr)
+        print(template, file=sys.stderr)
+        print(f"--- END update_ar template {template_name} ---", file=sys.stderr)
         try:
             _call_update_ar(one, network_id, template)
         except Exception as e:
             errors.append(f"{template_name}: {e}")
             continue
-        if _wait_for_ar_security_group(one, network_id, ar_id, sg_id):
+        _print_vnet_xml(args, network_id, f"after update_ar {template_name}")
+        if _wait_for_ar_security_group(args, network_id, ar_id, sg_id):
             return template_name
         errors.append(f"{template_name}: security group not visible on AR {ar_id}")
 
@@ -429,32 +479,31 @@ def _test_subnet_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dic
             zone=args.region,
         )
         network_id = network["network_id"]
-
         vnet_info = one.vn.info(int(network_id))
         ar_ids = [_ar_id(ar) for ar in _vnet_ars(vnet_info)]
         if len(ar_ids) < 2:
             raise RuntimeError(f"Expected at least 2 address ranges, found {len(ar_ids)}")
 
         target_ar_id, other_ar_id = ar_ids[0], ar_ids[1]
-        update_form = _update_ar_security_groups(one, network_id, target_ar_id, sg_id)
+        update_form = _update_ar_security_groups(one, args, network_id, target_ar_id, sg_id)
         tests["apply_subnet_rule"] = _passed(
-            "Security group applied to target address range",
+            "Security group applied to target address range with update_ar",
             network_id=network_id,
             target_ar_id=target_ar_id,
             other_ar_id=other_ar_id,
             sg_id=sg_id,
             update_form=update_form,
         )
-
-        vnet_info = one.vn.info(int(network_id))
+        target_has_sg = _raw_ar_has_sg(args, network_id, target_ar_id, sg_id)
+        other_has_sg = _raw_ar_has_sg(args, network_id, other_ar_id, sg_id)
         tests["subnet_allowed"] = (
             _passed("Target address range has scoped security group", ar_id=target_ar_id)
-            if _ar_has_sg(vnet_info, target_ar_id, sg_id)
+            if target_has_sg
             else _failed("Security group not found on target address range", ar_id=target_ar_id)
         )
         tests["other_subnet_blocked"] = (
             _passed("Security group is absent from unrelated address range", ar_id=other_ar_id)
-            if not _ar_has_sg(vnet_info, other_ar_id, sg_id)
+            if not other_has_sg
             else _failed("Security group leaked to unrelated address range", ar_id=other_ar_id)
         )
 
