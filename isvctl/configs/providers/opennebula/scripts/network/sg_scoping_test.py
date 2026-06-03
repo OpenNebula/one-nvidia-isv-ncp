@@ -61,6 +61,29 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _get_field(item: Any, key: str, default: Any = None) -> Any:
+    """Read a pyone field, accepting exact or case-insensitive key names."""
+    value = get_value(item, key, None)
+    if value is not None:
+        return value
+
+    candidates = {key.upper(), key.lower()}
+    if isinstance(item, dict):
+        lowered = {str(item_key).lower(): item_value for item_key, item_value in item.items()}
+        for candidate in candidates:
+            value = lowered.get(candidate.lower())
+            if value is not None:
+                return value
+        return default
+
+    for candidate in candidates:
+        value = getattr(item, candidate, None)
+        if value is not None:
+            return value
+
+    return default
+
+
 def _parse_int(value: str, field_name: str) -> int:
     """Parse an integer CLI value."""
     try:
@@ -76,7 +99,7 @@ def _split_sg_ids(value: Any) -> set[str]:
     if isinstance(value, list):
         items = value
     else:
-        items = str(value).replace(" ", "").split(",")
+        items = str(value).replace(" ", "").replace("[", "").replace("]", "").replace('"', "").split(",")
     return {str(item).strip() for item in items if str(item).strip()}
 
 
@@ -142,13 +165,13 @@ def _attach_sg_to_vm_nic(one: Any, vm_id: str, nic_id: int, sg_id: str) -> None:
 
 def _vm_nics(vm_info: Any) -> list[Any]:
     """Return VM NIC records."""
-    template = get_value(vm_info, "TEMPLATE", {})
-    return _as_list(get_value(template, "NIC"))
+    template = _get_field(vm_info, "TEMPLATE", {})
+    return _as_list(_get_field(template, "NIC"))
 
 
 def _nic_matches_id(nic: Any, nic_id: int) -> bool:
     """Return whether a NIC record has the requested NIC_ID."""
-    value = get_value(nic, "NIC_ID")
+    value = _get_field(nic, "NIC_ID")
     if value is None:
         return nic_id == 0
     try:
@@ -162,7 +185,7 @@ def _vm_nic_has_sg(one: Any, vm_id: str, nic_id: int, sg_id: str) -> bool:
     vm_info = one.vm.info(int(vm_id))
     for nic in _vm_nics(vm_info):
         if _nic_matches_id(nic, nic_id):
-            return str(sg_id) in _split_sg_ids(get_value(nic, "SECURITY_GROUPS"))
+            return str(sg_id) in _split_sg_ids(_get_field(nic, "SECURITY_GROUPS"))
     return False
 
 
@@ -186,37 +209,110 @@ def _wait_for_vm_nic_sg(
 
 def _vnet_ars(vnet_info: Any) -> list[Any]:
     """Return virtual-network address range records."""
-    ar_pool = get_value(vnet_info, "AR_POOL", {})
-    return _as_list(get_value(ar_pool, "AR"))
+    ar_pool = _get_field(vnet_info, "AR_POOL", {})
+    return _as_list(_get_field(ar_pool, "AR"))
 
 
 def _ar_id(ar: Any) -> str:
     """Return an AR identifier."""
-    return str(get_value(ar, "AR_ID", ""))
+    return str(_get_field(ar, "AR_ID", ""))
+
+
+def _ar_security_group_ids(ar: Any) -> set[str]:
+    """Return security group IDs directly configured on an address range."""
+    direct = _split_sg_ids(_get_field(ar, "SECURITY_GROUPS"))
+    if direct:
+        return direct
+
+    template = _get_field(ar, "TEMPLATE")
+    if template is not None:
+        return _split_sg_ids(_get_field(template, "SECURITY_GROUPS"))
+
+    return set()
 
 
 def _ar_has_sg(vnet_info: Any, ar_id: str, sg_id: str) -> bool:
     """Return whether an address range has a security group."""
     for ar in _vnet_ars(vnet_info):
         if _ar_id(ar) == str(ar_id):
-            return str(sg_id) in _split_sg_ids(get_value(ar, "SECURITY_GROUPS"))
+            return str(sg_id) in _ar_security_group_ids(ar)
     return False
 
 
-def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str) -> None:
-    """Set security groups on a virtual-network address range."""
-    template = "\n".join(
-        [
-            "AR = [",
-            f"  AR_ID = {quote(ar_id)},",
-            f"  SECURITY_GROUPS = {quote(sg_id)}",
-            "]",
-        ]
-    )
+def _call_update_ar(one: Any, network_id: str, template: str) -> None:
+    """Call the pyone virtual-network address-range update method."""
     try:
         one.vn.update_ar(int(network_id), template)
     except AttributeError:
         one.vn.updatear(int(network_id), template)
+
+
+def _wait_for_ar_security_group(
+    one: Any,
+    network_id: str,
+    ar_id: str,
+    sg_id: str,
+    timeout: int = 10,
+    interval: int = 1,
+) -> bool:
+    """Wait until an address range reports a security group."""
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        if _ar_has_sg(one.vn.info(int(network_id)), ar_id, sg_id):
+            return True
+        time.sleep(interval)
+
+    return False
+
+
+def _update_ar_security_groups(one: Any, network_id: str, ar_id: str, sg_id: str) -> str:
+    """Set security groups on a virtual-network address range and return the template form used."""
+    numeric_ar_id = int(ar_id)
+    templates = [
+        (
+            "ar-block",
+            "\n".join(
+                [
+                    "AR = [",
+                    f"  AR_ID = {numeric_ar_id},",
+                    f"  SECURITY_GROUPS = {quote(sg_id)}",
+                    "]",
+                ]
+            ),
+        ),
+        (
+            "flat",
+            "\n".join(
+                [
+                    f"AR_ID = {numeric_ar_id}",
+                    f"SECURITY_GROUPS = {quote(sg_id)}",
+                ]
+            ),
+        ),
+        (
+            "xml",
+            (
+                "<TEMPLATE><AR>"
+                f"<AR_ID>{numeric_ar_id}</AR_ID>"
+                f"<SECURITY_GROUPS>{sg_id}</SECURITY_GROUPS>"
+                "</AR></TEMPLATE>"
+            ),
+        ),
+    ]
+    errors = []
+
+    for template_name, template in templates:
+        try:
+            _call_update_ar(one, network_id, template)
+        except Exception as e:
+            errors.append(f"{template_name}: {e}")
+            continue
+        if _wait_for_ar_security_group(one, network_id, ar_id, sg_id):
+            return template_name
+        errors.append(f"{template_name}: security group not visible on AR {ar_id}")
+
+    raise RuntimeError("; ".join(errors))
 
 
 def _test_node_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dict[str, Any]:
@@ -313,13 +409,14 @@ def _test_subnet_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dic
             raise RuntimeError(f"Expected at least 2 address ranges, found {len(ar_ids)}")
 
         target_ar_id, other_ar_id = ar_ids[0], ar_ids[1]
-        _update_ar_security_groups(one, network_id, target_ar_id, sg_id)
+        update_form = _update_ar_security_groups(one, network_id, target_ar_id, sg_id)
         tests["apply_subnet_rule"] = _passed(
             "Security group applied to target address range",
             network_id=network_id,
             target_ar_id=target_ar_id,
             other_ar_id=other_ar_id,
             sg_id=sg_id,
+            update_form=update_form,
         )
 
         vnet_info = one.vn.info(int(network_id))
