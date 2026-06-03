@@ -84,6 +84,186 @@ def quote(value: object) -> str:
     return f'"{escaped}"'
 
 
+def cidr_rule_fields(cidr: str) -> dict[str, str]:
+    """Return OpenNebula security-group IP/SIZE fields for an IPv4 CIDR."""
+    network = ipaddress.ip_network(cidr, strict=False)
+    if not isinstance(network, ipaddress.IPv4Network):
+        raise ValueError("Only IPv4 CIDRs are supported for OpenNebula security group rules")
+    if network.prefixlen == 0:
+        return {}
+    return {
+        "IP": str(network.network_address),
+        "SIZE": str(network.num_addresses),
+    }
+
+
+def build_sg_template(name: str, description: str, rules: list[dict[str, str]]) -> str:
+    """Build an OpenNebula security group template."""
+    lines = [
+        f"NAME = {quote(name)}",
+        f"DESCRIPTION = {quote(description)}",
+    ]
+
+    for rule in rules:
+        lines.append("RULE = [")
+        rule_lines = [f"  {key} = {quote(value)}" for key, value in rule.items()]
+        lines.append(",\n".join(rule_lines))
+        lines.append("]")
+
+    return "\n".join(lines)
+
+
+def allow_all_egress_rule() -> dict[str, str]:
+    """Return a baseline outbound allow-all security group rule."""
+    return {"PROTOCOL": "ALL", "RULE_TYPE": "OUTBOUND"}
+
+
+def tcp_rule(rule_type: str, port: str | int, cidr: str | None = None) -> dict[str, str]:
+    """Return a TCP security group rule."""
+    rule = {
+        "PROTOCOL": "TCP",
+        "RULE_TYPE": rule_type.upper(),
+        "RANGE": str(port),
+    }
+    if cidr:
+        rule.update(cidr_rule_fields(cidr))
+    return rule
+
+
+def allocate_security_group(one: Any, template: str) -> str:
+    """Allocate an OpenNebula security group."""
+    return str(int(one.secgroup.allocate(template)))
+
+
+def update_security_group(one: Any, sg_id: str | int, template: str) -> None:
+    """Replace an OpenNebula security group template."""
+    one.secgroup.update(int(sg_id), template, 0)
+
+
+def delete_security_group(one: Any, sg_id: str | int) -> None:
+    """Delete an OpenNebula security group."""
+    one.secgroup.delete(int(sg_id))
+
+
+def security_group_exists(one: Any, sg_id: str | int) -> bool:
+    """Return whether a security group exists."""
+    try:
+        one.secgroup.info(int(sg_id))
+    except Exception:
+        return False
+    return True
+
+
+def wait_for_security_group_deleted(one: Any, sg_id: str | int, timeout: int = 60, interval: int = 2) -> bool:
+    """Wait until a security group no longer exists."""
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        if not security_group_exists(one, sg_id):
+            return True
+        time.sleep(interval)
+
+    return False
+
+
+def get_template_rules(sg_info: Any) -> list[Any]:
+    """Return security group rules from pyone info."""
+    template = get_value(sg_info, "TEMPLATE", {})
+    rules = get_value(template, "RULE", [])
+    if rules is None:
+        return []
+    if isinstance(rules, list):
+        return rules
+    return [rules]
+
+
+def rule_matches(
+    rule: Any,
+    *,
+    protocol: str | None = None,
+    rule_type: str | None = None,
+    port: str | int | None = None,
+    cidr: str | None = None,
+) -> bool:
+    """Return whether an OpenNebula security group rule matches the requested fields."""
+    if protocol and str(get_value(rule, "PROTOCOL", "")).upper() != protocol.upper():
+        return False
+    if rule_type and str(get_value(rule, "RULE_TYPE", "")).upper() != rule_type.upper():
+        return False
+    if port is not None:
+        expected_port = str(port)
+        rule_range = str(get_value(rule, "RANGE", ""))
+        if rule_range not in (expected_port, f"{expected_port}:{expected_port}"):
+            return False
+    if cidr:
+        fields = cidr_rule_fields(cidr)
+        if not fields:
+            rule_ip = get_value(rule, "IP")
+            rule_size = get_value(rule, "SIZE")
+            return rule_ip in (None, "") and rule_size in (None, "")
+        if str(get_value(rule, "IP", "")) != fields["IP"]:
+            return False
+        if str(get_value(rule, "SIZE", "")) != fields["SIZE"]:
+            return False
+    return True
+
+
+def has_security_group_rule(
+    sg_info: Any,
+    *,
+    protocol: str | None = None,
+    rule_type: str | None = None,
+    port: str | int | None = None,
+    cidr: str | None = None,
+) -> bool:
+    """Return whether a security group has a rule matching the requested fields."""
+    return any(
+        rule_matches(rule, protocol=protocol, rule_type=rule_type, port=port, cidr=cidr)
+        for rule in get_template_rules(sg_info)
+    )
+
+
+def get_rules_by_type(sg_info: Any, rule_type: str) -> list[Any]:
+    """Return rules with the requested direction."""
+    return [
+        rule
+        for rule in get_template_rules(sg_info)
+        if str(get_value(rule, "RULE_TYPE", "")).upper() == rule_type.upper()
+    ]
+
+
+def wait_for_security_group_rule_state(
+    one: Any,
+    sg_id: str | int,
+    *,
+    expected_present: bool,
+    protocol: str,
+    rule_type: str,
+    port: str | int | None = None,
+    cidr: str | None = None,
+    timeout: float = 10.0,
+    interval: float = 0.5,
+) -> tuple[bool, float]:
+    """Poll security group info until a rule reaches the expected visible state."""
+    start = time.monotonic()
+
+    while True:
+        sg_info = one.secgroup.info(int(sg_id))
+        present = has_security_group_rule(
+            sg_info,
+            protocol=protocol,
+            rule_type=rule_type,
+            port=port,
+            cidr=cidr,
+        )
+        elapsed = time.monotonic() - start
+        if present is expected_present:
+            return True, elapsed
+        if elapsed >= timeout:
+            return False, elapsed
+        time.sleep(interval)
+
+
 def split_subnets(cidr: str, subnet_count: int) -> list[ipaddress.IPv4Network]:
     """Split a network CIDR into the requested number of subnets."""
     network = ipaddress.ip_network(cidr, strict=False)

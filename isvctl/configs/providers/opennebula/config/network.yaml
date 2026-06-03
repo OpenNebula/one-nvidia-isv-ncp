@@ -3,12 +3,16 @@
 
 # OpenNebula Network Validation Configuration
 #
-# Imports the provider-agnostic network validation suite and wires the first
-# four network checks to OpenNebula VXLAN virtual-network scripts:
+# Imports the provider-agnostic network validation suite and wires the initial
+# network checks to OpenNebula VXLAN virtual-network scripts:
 #   1. VPC CRUD
 #   2. Subnet configuration
 #   3. VPC isolation
-#   4. Security group CRUD
+#   4a. Security group CRUD
+#   4b. Security blocking
+#   4c. Security policy propagation timing
+#   4e. Security group node scoping
+#   4f. Security group subnet scoping
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -127,7 +131,7 @@ commands:
         timeout: 120
         output_schema: vpc_isolation
 
-      # Test 4: Security group CRUD operations.
+      # Test 4a: Security group CRUD operations.
       - name: sg_crud
         phase: test
         command: "python3 ../scripts/network/sg_crud_test.py"
@@ -151,10 +155,95 @@ commands:
         timeout: 120
         output_schema: sg_crud
 
+      # Test 4b: Security blocking policy checks.
+      - name: security_blocking
+        phase: test
+        command: "python3 ../scripts/network/security_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.94.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: security_blocking
+
+      # Test 4c: Security policy propagation timing.
+      - name: sg_policy_propagation
+        phase: test
+        command: "python3 ../scripts/network/sg_policy_propagation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--max-propagation-seconds"
+          - "10"
+        timeout: 120
+
+      # Test 4e: Security group scoping at VM/node NIC level.
+      - name: sg_node_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "node"
+          - "--template-id"
+          - "{{base_template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
+      # Test 4f: Security group scoping at address-range/subnet level.
+      - name: sg_subnet_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "subnet"
+          - "--cidr"
+          - "10.85.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # security_blocking, connectivity_test, traffic_validation, vpc_ip_config,
-      # dhcp_ip_test, SG scoping, SDN logging/policy, BYOIP, stable/floating IP,
-      # DNS, peering, and fabric topology checks.
+      # connectivity_test, traffic_validation, vpc_ip_config, dhcp_ip_test,
+      # workload/service SG scoping, port policy, SDN logging, BYOIP,
+      # stable/floating IP, DNS, peering, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -184,7 +273,7 @@ tests:
     security_groups: "{{env.ONE_VNET_SECURITY_GROUPS | default('0')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
-    base_template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('')}}"
+    base_template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default(env.ONE_VM_TEMPLATE_ID | default('0'))}}"
     teardown_flag: "{{(env.ONE_NETWORK_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   validations:
@@ -197,17 +286,13 @@ tests:
 
   exclude:
     tests:
-      - SecurityBlockingCheck
       - NetworkConnectivityCheck
       - TrafficFlowCheck
       - VpcIpConfigCheck
       - DhcpIpManagementCheck
       - SgWorkloadScopingCheck
-      - SgNodeScopingCheck
-      - SgSubnetScopingCheck
       - SgServiceScopingCheck
       - SgPortSecurityPolicyCheck
-      - SgPolicyPropagationTimingCheck
       - SdnHardwareFaultLoggingCheck
       - SdnLatencyPerfLoggingCheck
       - SdnFilterAuditTrailCheck
