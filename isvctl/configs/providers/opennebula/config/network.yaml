@@ -4,10 +4,11 @@
 # OpenNebula Network Validation Configuration
 #
 # Imports the provider-agnostic network validation suite and wires the first
-# three network checks to OpenNebula VXLAN virtual-network scripts:
+# four network checks to OpenNebula VXLAN virtual-network scripts:
 #   1. VPC CRUD
 #   2. Subnet configuration
 #   3. VPC isolation
+#   4. Security group CRUD
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -126,10 +127,34 @@ commands:
         timeout: 120
         output_schema: vpc_isolation
 
+      # Test 4: Security group CRUD operations.
+      - name: sg_crud
+        phase: test
+        command: "python3 ../scripts/network/sg_crud_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.95.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: sg_crud
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # sg_crud, security_blocking, connectivity_test, traffic_validation,
-      # vpc_ip_config, dhcp_ip_test, SG scoping, SDN logging/policy, BYOIP,
-      # stable/floating IP, DNS, peering, and fabric topology checks.
+      # security_blocking, connectivity_test, traffic_validation, vpc_ip_config,
+      # dhcp_ip_test, SG scoping, SDN logging/policy, BYOIP, stable/floating IP,
+      # DNS, peering, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -172,7 +197,6 @@ tests:
 
   exclude:
     tests:
-      - SgCrudCheck
       - SecurityBlockingCheck
       - NetworkConnectivityCheck
       - TrafficFlowCheck
