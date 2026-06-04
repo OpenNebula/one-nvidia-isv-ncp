@@ -8,14 +8,15 @@
 # Steps:
 #   1. launch_instance - pyone: Provisions VM from template, outputs IP
 #   2. list_instances - pyone: Checks if VM exists
-#   3. stop_instance - pyone: Powers off VM
-#   4. start_instance - pyone: Resumes VM
-#   5. reboot_instance - pyone: Reboots VM
-#   6. describe_instance - pyone: Describes current state, passes SSH info
-#   7. nvidia_registry_preflight - paramiko: Logs in to NGC, checks CUDA probe tag
-#   8. deploy_nim - paramiko: Deploys NIM container via SSH
-#   9. teardown_nim - paramiko: Stops NIM container via SSH
-#   10. teardown - pyone: Terminates VM
+#   3. virtual_device_hardening - SSH: Checks guest virtual-device signals
+#   4. stop_instance - pyone: Powers off VM
+#   5. start_instance - pyone: Resumes VM
+#   6. reboot_instance - pyone: Reboots VM
+#   7. describe_instance - pyone: Describes current state, passes SSH info
+#   8. nvidia_registry_preflight - paramiko: Logs in to NGC, checks CUDA probe tag
+#   9. deploy_nim - paramiko: Deploys NIM container via SSH
+#   10. teardown_nim - paramiko: Stops NIM container via SSH
+#   11. teardown - pyone: Terminates VM
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/vm.yaml
@@ -49,6 +50,20 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      - name: virtual_device_hardening
+        phase: test
+        command: "python3 ../scripts/vm/virtual_device_hardening.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--public-ip"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
         timeout: 120
 
       - name: stop_instance
