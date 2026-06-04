@@ -65,7 +65,7 @@ PROBES: tuple[tuple[str, str], ...] = (
     ),
     (
         "device_paths",
-        "find /dev -maxdepth 1 \\( -name fd0 -o -name sr0 -o -name cdrom -o -name dvd \\) -print 2>/dev/null || true",
+        "find /dev -maxdepth 1 \\( -name fd0 -o -name dvd \\) -print 2>/dev/null || true",
     ),
 )
 
