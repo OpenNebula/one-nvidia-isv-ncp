@@ -40,7 +40,7 @@ CLUSTER_INTERVAL=60
 
 LONGHORN_VERSION="1.11.2"
 NVIDIA_CHART_REPO="https://helm.ngc.nvidia.com/nvidia"
-NVIDIA_GPU_OPERATOR_VERSION="v25.10.1"
+NVIDIA_GPU_OPERATOR_VERSION="v26.3.1"
 NVIDIA_GPU_OPERATOR_NAMESPACE="nvidia-gpu-operator"
 
 KUBEFLOW_MPI_VERSION="v0.8.0"
@@ -208,27 +208,39 @@ spec:
   targetNamespace: "$NVIDIA_GPU_OPERATOR_NAMESPACE"
   createNamespace: true
   valuesContent: |-
-    toolkit:
-      env:
-      - name: CONTAINERD_SOCKET
-        value: /run/k3s/containerd/containerd.sock
+    cdi:
+      nriPluginEnabled: true
 EOF
 
 # Install Kubeflow MPI Operator
 kubectl apply --server-side -f "$KUBEFLOW_MPI_URL" >&2
 
 # -----------------------------------------------------------------------------
-# Preflight Checks (Wait for GPUs)
+# Preflight Checks (Wait for GPUs and Runtime)
 # -----------------------------------------------------------------------------
 echo "Running preflight checks..." >&2
-for i in {1..20}; do
-    GPU_NODES=$(kubectl get nodes -l nvidia.com/gpu.present=true \
-      -o name 2>/dev/null | wc -l || echo "0")
-    if [[ "$GPU_NODES" -gt 0 ]]; then
-        echo "  Found $GPU_NODES GPU node(s)" >&2
+# Increased timeout to ~15 minutes (60 * 15s) as GPU operator components (driver/toolkit) can be slow
+for i in {1..60}; do
+    # 1. Check for nodes with GPU presence labels
+    GPU_LABELS=$(kubectl get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null | wc -l || echo "0")
+
+    # 2. Check for nodes that actually have registered GPU capacity (allocatable > 0)
+    # This ensures the device plugin has finished its work on those nodes.
+    GPU_WITH_CAPACITY=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null | grep -c -v '^$' | grep -c -v '^0$' || echo "0")
+
+    # 3. Check for RuntimeClass "nvidia" (required by isvtest workloads)
+    HAS_RUNTIME=$(kubectl get runtimeclass nvidia --no-headers 2>/dev/null | wc -l || echo "0")
+
+    echo "  Waiting for GPU readiness... ($i/60) [Nodes with Labels: $GPU_LABELS/$GPU_NODE_COUNT, Nodes with Capacity: $GPU_WITH_CAPACITY/$GPU_NODE_COUNT, RuntimeClass: $HAS_RUNTIME]" >&2
+
+    if [[ "$GPU_LABELS" -ge "$GPU_NODE_COUNT" ]] && [[ "$GPU_WITH_CAPACITY" -ge "$GPU_NODE_COUNT" ]] && [[ "$HAS_RUNTIME" -gt 0 ]]; then
+        echo "  All $GPU_NODE_COUNT GPU nodes are ready and capacity is registered." >&2
         break
     fi
-    echo "  Waiting for GPU operator... ($i/20)" >&2
+
+    if [[ "$i" -eq 60 ]]; then
+        echo "Warning: Timeout waiting for full GPU readiness on all nodes. Following tests might fail if components are still initializing." >&2
+    fi
     sleep 15
 done
 

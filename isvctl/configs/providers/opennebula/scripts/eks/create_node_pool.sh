@@ -33,7 +33,7 @@ set -eo pipefail
 CLUSTER_NAME="${ONE_CLUSTER_NAME:-isv-k8s-cluster}"
 POOL_NAME="${POOL_NAME:-isv-test-pool}"
 DESIRED_SIZE="${DESIRED_SIZE:-1}"
-NODEGROUP_FAMILY="general"
+NODEGROUP_FAMILY="${NODE_FAMILY:-general}"
 NODEGROUP_FLAVOUR="small"
 NODE_TYPE="${NODE_TYPE:-cpu}"
 LABELS_JSON="${LABELS_JSON:-"{}"}"
