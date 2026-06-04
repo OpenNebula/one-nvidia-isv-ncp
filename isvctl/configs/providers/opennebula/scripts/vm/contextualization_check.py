@@ -113,11 +113,12 @@ def check_context_keys(
         f"context_file={shlex.quote(context_file)}; "
         'present=""; missing=""; '
         f"for key in {key_args}; do "
-        'if grep -Eq "^${key}=" "$context_file"; then present="$present $key"; '
+        'if grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$context_file"; '
+        'then present="$present $key"; '
         'else missing="$missing $key"; fi; '
         "done; "
-        'if [ -z "$missing" ]; then echo "present:${present# }"; '
-        'else echo "present:${present# }"; echo "missing:${missing# }"; exit 1; fi'
+        'echo "present:${present# }"; '
+        'if [ -n "$missing" ]; then echo "missing:${missing# }"; exit 1; fi'
     )
     exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=timeout)
     present: list[str] = []
