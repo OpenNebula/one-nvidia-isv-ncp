@@ -28,7 +28,14 @@ CONTEXT_PATHS = (
     "/mnt/context.sh",
     "/media/context.sh",
 )
-DEFAULT_REQUIRED_KEYS = ("SSH_PUBLIC_KEY",)
+
+DEFAULT_REQUIRED_KEYS = (
+    "SSH_PUBLIC_KEY",
+    "ETH0_IP",
+    "VMID",
+    "ONEGATE_ENDPOINT",
+    "TOKENTXT",
+)
 
 
 def ssh_run(
