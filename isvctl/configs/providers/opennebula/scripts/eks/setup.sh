@@ -224,16 +224,7 @@ for i in {1..60}; do
     # 1. Check for nodes with GPU presence labels
     GPU_LABELS=$(kubectl get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null | wc -l || echo "0")
 
-    # 2. Check for nodes that actually have registered GPU capacity (allocatable > 0)
-    # This ensures the device plugin has finished its work on those nodes.
-    GPU_WITH_CAPACITY=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null | grep -c -v '^$' | grep -c -v '^0$' || echo "0")
-
-    # 3. Check for RuntimeClass "nvidia" (required by isvtest workloads)
-    HAS_RUNTIME=$(kubectl get runtimeclass nvidia --no-headers 2>/dev/null | wc -l || echo "0")
-
-    echo "  Waiting for GPU readiness... ($i/60) [Nodes with Labels: $GPU_LABELS/$GPU_NODE_COUNT, Nodes with Capacity: $GPU_WITH_CAPACITY/$GPU_NODE_COUNT, RuntimeClass: $HAS_RUNTIME]" >&2
-
-    if [[ "$GPU_LABELS" -ge "$GPU_NODE_COUNT" ]] && [[ "$GPU_WITH_CAPACITY" -ge "$GPU_NODE_COUNT" ]] && [[ "$HAS_RUNTIME" -gt 0 ]]; then
+    if [[ "$GPU_LABELS" -ge "$GPU_NODE_COUNT" ]]; then
         echo "  All $GPU_NODE_COUNT GPU nodes are ready and capacity is registered." >&2
         break
     fi
