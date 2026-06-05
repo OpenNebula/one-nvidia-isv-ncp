@@ -33,6 +33,18 @@ def build_template(name: str, *, image_id: str | None, region: str, updated: boo
         f"DESCRIPTION = {quote('ISV validation install config')}",
         f"ISVTEST_REGION = {quote(region)}",
         f"ISVTEST_UPDATED = {quote(str(updated).lower())}",
+        "OS = [",
+        "  ARCH = \"aarch64\",",
+        "  FIRMWARE = \"/usr/share/AAVMF/AAVMF_CODE.fd\",",
+        "  FIRMWARE_SECURE = \"no\",",
+        "  MACHINE = \"virt\"",
+        "]",
+        "TOPOLOGY = [",
+        "  PIN_POLICY = \"THREAD\"",
+        "]",
+        "CPU_MODEL = [",
+        "  MODEL = \"host-passthrough\"",
+        "]",
     ]
     if image_id:
         lines.append(f"DISK = [ IMAGE_ID = {int(image_id)} ]")
