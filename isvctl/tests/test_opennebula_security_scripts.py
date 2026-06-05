@@ -110,32 +110,74 @@ def test_opennebula_api_endpoint_isolation_treats_unresolvable_dns_as_not_privat
     assert payload["tests"]["dns_not_public"]["passed"] is True
 
 
-def test_opennebula_audit_logging_main_emits_structured_skip(
+def test_opennebula_audit_logging_passes_with_matching_log_entry(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
-    """OpenNebula SEC08 reference emits a clean check-specific skip."""
+    """OpenNebula SEC08 checks pass when the audit log contains the emitted event."""
+    module = _load_security_script("audit_logging_test.py")
+    audit_log = tmp_path / "oned.log"
+    audit_log.write_text("", encoding="utf-8")
+
+    def fake_call(_xmlrpc_url: str, _auth: str, marker: str) -> str:
+        """Write the audit evidence that a real OpenNebula log pipeline would emit."""
+        audit_log.write_text(
+            (
+                "2026-06-05T12:00:00Z opennebula-xmlrpc region=one user=oneadmin "
+                f"src=10.0.0.10 user_agent=isvctl-opennebula-audit/{marker} one.system.version\n"
+            ),
+            encoding="utf-8",
+        )
+        return module.EVENT_NAME
+
+    monkeypatch.setattr(module, "_call_management_api", fake_call)
+
+    payload = module.evaluate_audit_logging(
+        region="one",
+        xmlrpc_url="http://one.example.internal:2633/RPC2",
+        auth="oneadmin:secret",
+        audit_log_path=audit_log,
+        retention_days=90,
+        poll_seconds=1,
+        poll_interval_seconds=0,
+        max_bytes=20_000,
+    )
+
+    assert payload["success"] is True
+    assert payload["tests"]["audit_log_entry_found"]["passed"] is True
+    assert payload["tests"]["audit_log_event_name_matches"]["passed"] is True
+    assert payload["tests"]["audit_log_user_identity_present"]["passed"] is True
+    assert payload["tests"]["audit_log_source_ip_present"]["passed"] is True
+    assert payload["tests"]["audit_log_user_agent_matches"]["passed"] is True
+    assert payload["tests"]["audit_log_region_matches"]["passed"] is True
+    assert payload["tests"]["audit_log_event_source_matches"]["passed"] is True
+    assert payload["tests"]["audit_log_retention_at_least_30_days"]["passed"] is True
+
+
+def test_opennebula_audit_logging_fails_without_log_file() -> None:
+    """OpenNebula SEC08 checks fail when audit evidence is not readable."""
     module = _load_security_script("audit_logging_test.py")
 
-    monkeypatch.setattr(sys, "argv", ["audit_logging_test.py", "--region", "one"])
+    payload = module.evaluate_audit_logging(
+        region="one",
+        xmlrpc_url="http://one.example.internal:2633/RPC2",
+        auth="oneadmin:secret",
+        audit_log_path=Path("/tmp/does-not-exist-opennebula-audit.log"),
+        retention_days=90,
+        poll_seconds=1,
+        poll_interval_seconds=0,
+        max_bytes=20_000,
+    )
 
-    exit_code = module.main()
-    payload = _payload(capsys)
+    assert payload["success"] is False
+    assert payload["tests"]["audit_log_entry_found"]["passed"] is False
 
-    assert exit_code == 0
-    assert payload["success"] is True
-    assert payload["audit_log_entry_skipped"] is True
-    assert payload["audit_log_retention_skipped"] is True
-    assert payload["audit_log_entry_skip_reason"] == module.SKIP_REASON
-    assert payload["audit_log_retention_skip_reason"] == module.SKIP_REASON
-    assert set(payload) == {
-        "success",
-        "platform",
-        "test_name",
-        "audit_log_entry_skipped",
-        "audit_log_entry_skip_reason",
-        "audit_log_retention_skipped",
-        "audit_log_retention_skip_reason",
-        "tests",
-    }
-    assert all(test["passed"] is True and test["skipped"] is True for test in payload["tests"].values())
+
+def test_opennebula_audit_logging_fails_short_retention() -> None:
+    """OpenNebula SEC08 retention check requires at least 30 days."""
+    module = _load_security_script("audit_logging_test.py")
+
+    tests = module._evaluate_retention_tests(7)
+
+    assert tests["audit_log_trail_logging_enabled"]["passed"] is True
+    assert tests["audit_log_retention_at_least_30_days"]["passed"] is False

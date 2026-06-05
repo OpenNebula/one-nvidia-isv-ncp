@@ -4,8 +4,8 @@
 # OpenNebula Security Validation Configuration
 #
 # Wires the OpenNebula XML-RPC endpoint to the provider-neutral API endpoint
-# isolation contract and emits structured skips for environment-specific
-# audit logging checks.
+# isolation contract. Audit logging checks require a readable local audit log
+# file and retention-days evidence.
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/security.yaml
@@ -32,6 +32,15 @@ commands:
         args:
           - "--region"
           - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--audit-log-path"
+          - "{{audit_log_path}}"
+          - "--audit-retention-days"
+          - "{{audit_retention_days}}"
+        sensitive_args: ["--auth"]
         timeout: 30
 
 tests:
@@ -42,6 +51,9 @@ tests:
   settings:
     region: "{{env.ONE_REGION | default('opennebula')}}"
     xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
+    auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
+    audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('', true)}}"
+    audit_retention_days: "{{env.ONE_AUDIT_RETENTION_DAYS | default('0')}}"
 
   validations:
     api_security:
