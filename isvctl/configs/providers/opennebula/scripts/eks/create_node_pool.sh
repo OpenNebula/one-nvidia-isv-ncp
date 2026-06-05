@@ -205,25 +205,4 @@ jq -n \
       expected_taints_json: $expected_taints_json,
       expected_instance_types_json: $expected_instance_types_json,
       node_type: $node_type
-    }' > /create-config
-
-
-jq -n \
-    --arg node_pool_name "${POOL_NAME}" \
-    --arg label_selector "${LABEL_SELECTOR}" \
-    --argjson expected_replicas "${DESIRED_SIZE}" \
-    --arg expected_labels_json "${EXPECTED_LABELS_COMPACT}" \
-    --arg expected_taints_json "${EXPECTED_TAINTS_COMPACT}" \
-    --arg expected_instance_types_json "${EXPECTED_INSTANCE_TYPES_COMPACT}" \
-    --arg node_type "${NODE_TYPE}" \
-    '{
-      success: true,
-      platform: "kubernetes",
-      node_pool_name: $node_pool_name,
-      label_selector: $label_selector,
-      expected_replicas: $expected_replicas,
-      expected_labels_json: $expected_labels_json,
-      expected_taints_json: $expected_taints_json,
-      expected_instance_types_json: $expected_instance_types_json,
-      node_type: $node_type
     }'
