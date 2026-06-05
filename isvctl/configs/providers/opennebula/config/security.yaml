@@ -40,8 +40,12 @@ commands:
           - "{{audit_log_path}}"
           - "--audit-retention-days"
           - "{{audit_retention_days}}"
+          - "--poll-seconds"
+          - "{{audit_poll_seconds}}"
+          - "--xmlrpc-timeout-seconds"
+          - "{{audit_xmlrpc_timeout_seconds}}"
         sensitive_args: ["--auth"]
-        timeout: 30
+        timeout: 90
 
 tests:
   platform: security
@@ -54,6 +58,8 @@ tests:
     auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
     audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('', true)}}"
     audit_retention_days: "{{env.ONE_AUDIT_RETENTION_DAYS | default('0')}}"
+    audit_poll_seconds: "{{env.ONE_AUDIT_POLL_SECONDS | default('20')}}"
+    audit_xmlrpc_timeout_seconds: "{{env.ONE_AUDIT_XMLRPC_TIMEOUT_SECONDS | default('10')}}"
 
   validations:
     api_security:

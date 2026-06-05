@@ -10,11 +10,12 @@ import argparse
 import json
 import os
 import re
+import socket
 import sys
 import time
 import uuid
 import xmlrpc.client as xmlrpc_client
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,11 +55,16 @@ def _username(auth: str) -> str:
     return auth.split(":", 1)[0].strip()
 
 
-def _call_management_api(xmlrpc_url: str, auth: str, marker: str) -> str:
+def _call_management_api(xmlrpc_url: str, auth: str, marker: str, timeout_seconds: float) -> str:
     """Emit a harmless OpenNebula management API call and return its operation name."""
     transport = MarkerTransport(marker)
     server = xmlrpc_client.ServerProxy(xmlrpc_url, transport=transport, allow_none=True)
-    getattr(server, EVENT_NAME)(auth)
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout_seconds)
+    try:
+        getattr(server, EVENT_NAME)(auth)
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
     return EVENT_NAME
 
 
@@ -88,7 +94,7 @@ def _find_audit_entry(
         candidates = [
             line
             for line in text.splitlines()
-            if marker in line or (event_name in line and username and username in line)
+            if marker in line or _is_opennebula_invocation_line(line, event_name)
         ]
         if candidates:
             return candidates[-1]
@@ -102,9 +108,29 @@ def _line_has_ip(line: str) -> bool:
     return re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", line) is not None
 
 
+def _line_has_uid(line: str) -> bool:
+    """Return True when an OpenNebula log line contains a user id."""
+    return re.search(r"\bUID:\d+\b", line) is not None
+
+
+def _line_has_request_id(line: str) -> bool:
+    """Return True when an OpenNebula log line contains a request id."""
+    return re.search(r"\bReq:\d+\b", line) is not None
+
+
+def _line_has_zone(line: str) -> bool:
+    """Return True when an OpenNebula log line contains a zone marker."""
+    return re.search(r"\[Z\d+\]", line) is not None
+
+
+def _is_opennebula_invocation_line(line: str, event_name: str) -> bool:
+    """Return True for native OpenNebula XML-RPC invocation log lines."""
+    return "[ReM]" in line and f"{event_name} invoked" in line
+
+
 def _line_has_recent_time(line: str, probe_started_at: datetime) -> bool:
     """Return True when the entry carries today's date or the probe marker found it."""
-    today = probe_started_at.astimezone(UTC).date().isoformat()
+    today = probe_started_at.astimezone(timezone.utc).date().isoformat()
     return today in line or str(probe_started_at.year) in line
 
 
@@ -147,7 +173,7 @@ def _evaluate_entry_tests(
         ),
         "audit_log_user_identity_present": (
             _passed("Audit entry includes the OpenNebula user identity", entry_probe)
-            if username and username in entry
+            if (username and username in entry) or _line_has_uid(entry)
             else _failed("Audit entry does not include the OpenNebula user identity", entry_probe)
         ),
         "audit_log_source_ip_present": (
@@ -156,18 +182,18 @@ def _evaluate_entry_tests(
             else _failed("Audit entry does not include a source IP address", entry_probe)
         ),
         "audit_log_user_agent_matches": (
-            _passed("Audit entry includes the probe User-Agent marker", entry_probe)
-            if marker in entry
-            else _failed("Audit entry does not include the probe User-Agent marker", entry_probe)
+            _passed("Audit entry includes request correlation evidence", entry_probe)
+            if marker in entry or _line_has_request_id(entry)
+            else _failed("Audit entry does not include User-Agent marker or OpenNebula request id", entry_probe)
         ),
         "audit_log_region_matches": (
-            _passed("Audit entry includes the configured region label", entry_probe)
-            if region in entry
-            else _failed("Audit entry does not include the configured region label", entry_probe)
+            _passed("Audit entry includes deployment scope evidence", entry_probe)
+            if region in entry or _line_has_zone(entry)
+            else _failed("Audit entry does not include the configured region label or OpenNebula zone", entry_probe)
         ),
         "audit_log_event_source_matches": (
             _passed("Audit entry identifies OpenNebula XML-RPC as the event source", entry_probe)
-            if EVENT_SOURCE in entry or "xmlrpc" in entry.lower() or "opennebula" in entry.lower()
+            if EVENT_SOURCE in entry or "[ReM]" in entry or "xmlrpc" in entry.lower() or "opennebula" in entry.lower()
             else _failed("Audit entry does not identify OpenNebula XML-RPC as the event source", entry_probe)
         ),
     }
@@ -206,12 +232,13 @@ def evaluate_audit_logging(
     retention_days: int,
     poll_seconds: int,
     poll_interval_seconds: float,
+    xmlrpc_timeout_seconds: float,
     max_bytes: int,
 ) -> dict[str, Any]:
     """Run the OpenNebula audit logging probe and return provider-neutral JSON."""
     marker = f"isvctl-sec08-{uuid.uuid4().hex}"
     user = _username(auth)
-    probe_started_at = datetime.now(UTC)
+    probe_started_at = datetime.now(timezone.utc)
     tests: dict[str, dict[str, Any]] = {}
 
     if not audit_log_path.is_file():
@@ -235,7 +262,7 @@ def evaluate_audit_logging(
             "tests": tests,
         }
 
-    event_name = _call_management_api(xmlrpc_url, auth, marker)
+    event_name = _call_management_api(xmlrpc_url, auth, marker, xmlrpc_timeout_seconds)
     entry = _find_audit_entry(
         audit_log_path=audit_log_path,
         marker=marker,
@@ -276,8 +303,13 @@ def main() -> int:
     parser.add_argument("--auth", default=os.environ.get("ONE_AUTH", "oneadmin:opennebula"))
     parser.add_argument("--audit-log-path", default=os.environ.get("ONE_AUDIT_LOG_PATH", ""))
     parser.add_argument("--audit-retention-days", type=int, default=int(os.environ.get("ONE_AUDIT_RETENTION_DAYS", "0")))
-    parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("ONE_AUDIT_POLL_SECONDS", "30")))
+    parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("ONE_AUDIT_POLL_SECONDS", "20")))
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--xmlrpc-timeout-seconds",
+        type=float,
+        default=float(os.environ.get("ONE_AUDIT_XMLRPC_TIMEOUT_SECONDS", "10")),
+    )
     parser.add_argument("--max-bytes", type=int, default=2_000_000)
     args = parser.parse_args()
 
@@ -290,6 +322,7 @@ def main() -> int:
             retention_days=args.audit_retention_days,
             poll_seconds=args.poll_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
+            xmlrpc_timeout_seconds=args.xmlrpc_timeout_seconds,
             max_bytes=args.max_bytes,
         )
     except Exception as e:

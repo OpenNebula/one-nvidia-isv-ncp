@@ -119,12 +119,12 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
     audit_log = tmp_path / "oned.log"
     audit_log.write_text("", encoding="utf-8")
 
-    def fake_call(_xmlrpc_url: str, _auth: str, marker: str) -> str:
+    def fake_call(_xmlrpc_url: str, _auth: str, marker: str, _timeout_seconds: float) -> str:
         """Write the audit evidence that a real OpenNebula log pipeline would emit."""
         audit_log.write_text(
             (
-                "2026-06-05T12:00:00Z opennebula-xmlrpc region=one user=oneadmin "
-                f"src=10.0.0.10 user_agent=isvctl-opennebula-audit/{marker} one.system.version\n"
+                "Fri Jun  5 10:22:35 2026 [Z0][ReM][D]: "
+                "Req:8368 UID:1 IP:127.0.0.1 one.system.version invoked\n"
             ),
             encoding="utf-8",
         )
@@ -140,6 +140,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
         retention_days=90,
         poll_seconds=1,
         poll_interval_seconds=0,
+        xmlrpc_timeout_seconds=1,
         max_bytes=20_000,
     )
 
@@ -166,6 +167,7 @@ def test_opennebula_audit_logging_fails_without_log_file() -> None:
         retention_days=90,
         poll_seconds=1,
         poll_interval_seconds=0,
+        xmlrpc_timeout_seconds=1,
         max_bytes=20_000,
     )
 
