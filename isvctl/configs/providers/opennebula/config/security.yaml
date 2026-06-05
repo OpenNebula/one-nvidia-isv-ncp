@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Security Validation Configuration
+#
+# Wires the OpenNebula XML-RPC endpoint to the provider-neutral API endpoint
+# isolation contract and emits structured skips for environment-specific
+# audit logging checks.
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/security.yaml
+
+version: "1.0"
+
+commands:
+  security:
+    phases: ["test"]
+    steps:
+      - name: api_endpoint_isolation
+        phase: test
+        command: "python3 ../scripts/security/api_endpoint_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+        timeout: 60
+
+      - name: audit_logging_test
+        phase: test
+        command: "python3 ../scripts/security/audit_logging_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+        timeout: 30
+
+tests:
+  platform: security
+  cluster_name: "opennebula-security-validation"
+  description: "OpenNebula security validation"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
+
+  validations:
+    api_security:
+      checks:
+        ApiEndpointIsolationCheck:
+          step: api_endpoint_isolation
+
+    audit_log_entry:
+      checks:
+        AuditLogEntryCheck:
+          step: audit_logging_test
+
+    audit_log_retention:
+      checks:
+        AuditLogRetentionCheck:
+          step: audit_logging_test
+
+  exclude:
+    labels: []
