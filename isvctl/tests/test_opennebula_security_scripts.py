@@ -223,6 +223,14 @@ def test_opennebula_centralized_kms_fails_not_implemented() -> None:
         ),
         ("mfa_enforcement", {"root_mfa_enabled", "console_users_mfa", "api_mfa_policy", "cli_mfa_policy"}),
         (
+            "minimal_role_enforcement_test",
+            {
+                "out_of_scope_compute_denied",
+                "out_of_scope_storage_denied",
+                "out_of_scope_network_denied",
+            },
+        ),
+        (
             "oidc_user_auth_test",
             {
                 "valid_token_accepted",

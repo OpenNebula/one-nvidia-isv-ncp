@@ -42,6 +42,11 @@ TEST_KEYS: dict[str, list[str]] = {
         "api_mfa_policy",
         "cli_mfa_policy",
     ],
+    "minimal_role_enforcement_test": [
+        "out_of_scope_compute_denied",
+        "out_of_scope_storage_denied",
+        "out_of_scope_network_denied",
+    ],
     "oidc_user_auth_test": [
         "valid_token_accepted",
         "bad_signature_rejected",

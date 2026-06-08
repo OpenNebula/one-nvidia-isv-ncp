@@ -120,6 +120,13 @@ commands:
         continue_on_failure: true
         timeout: 90
 
+      - name: minimal_role_enforcement_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "minimal_role_enforcement_test"]
+        continue_on_failure: true
+        timeout: 60
+
       - name: sa_credential_test
         phase: test
         command: "python3 ../scripts/security/sa_credential_test.py"
@@ -257,6 +264,11 @@ tests:
       checks:
         LeastPrivilegePolicyCheck:
           step: least_privilege_test
+
+    minimal_role_enforcement:
+      checks:
+        MinimalRoleEnforcementCheck:
+          step: minimal_role_enforcement_test
 
     service_account_auth:
       checks:
