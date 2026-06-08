@@ -317,21 +317,36 @@ def _ping_via_ssh(
     count: int,
     ping_timeout: int,
     ssh_timeout: int,
+    retry_timeout: int,
+    retry_interval: int,
 ) -> dict[str, Any]:
-    """Ping a target from a VM through SSH and return a test result."""
+    """Ping a target from a VM through SSH, retrying brief datapath convergence."""
     command = f"ping -c {count} -W {ping_timeout} {shlex.quote(target)}"
-    exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
-    if exit_code == 0:
-        return {
-            "passed": True,
-            "latency_ms": _parse_ping_latency(stdout),
-            "target": target,
-        }
+    deadline = time.time() + retry_timeout
+    attempt = 0
+    last_error = ""
+
+    while True:
+        attempt += 1
+        exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
+        if exit_code == 0:
+            return {
+                "passed": True,
+                "latency_ms": _parse_ping_latency(stdout),
+                "target": target,
+                "attempts": attempt,
+            }
+
+        last_error = (stderr or stdout or f"ping exited with {exit_code}").strip()
+        if time.time() >= deadline:
+            break
+        time.sleep(retry_interval)
 
     return {
         "passed": False,
-        "error": (stderr or stdout or f"ping exited with {exit_code}").strip(),
+        "error": last_error,
         "target": target,
+        "attempts": attempt,
     }
 
 
@@ -403,6 +418,8 @@ def run_connectivity_test(args: argparse.Namespace, one: Any | None = None) -> d
             count=args.ping_count,
             ping_timeout=args.ping_timeout,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.ping_retry_timeout,
+            retry_interval=args.ping_retry_interval,
         )
         result["tests"]["instance_to_internet"] = _ping_via_ssh(
             host=source_public_ip,
@@ -412,6 +429,8 @@ def run_connectivity_test(args: argparse.Namespace, one: Any | None = None) -> d
             count=args.ping_count,
             ping_timeout=args.ping_timeout,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.ping_retry_timeout,
+            retry_interval=args.ping_retry_interval,
         )
 
         result["connectivity_verified"] = all(test.get("passed", False) for test in result["tests"].values())
@@ -451,6 +470,8 @@ def main() -> int:
     parser.add_argument("--ssh-command-timeout", type=int, default=30, help="Seconds allowed for each SSH ping")
     parser.add_argument("--ping-count", type=int, default=3, help="ICMP echo count")
     parser.add_argument("--ping-timeout", type=int, default=2, help="Seconds to wait for each ping reply")
+    parser.add_argument("--ping-retry-timeout", type=int, default=60, help="Seconds to retry ping probes")
+    parser.add_argument("--ping-retry-interval", type=int, default=5, help="Seconds between ping probe attempts")
     parser.add_argument("--skip-cleanup", action="store_true", help="Keep temporary VMs for debugging")
     args = parser.parse_args()
 
