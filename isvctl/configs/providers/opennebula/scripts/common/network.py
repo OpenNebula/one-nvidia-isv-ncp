@@ -349,8 +349,8 @@ def build_vnet_template(
     bridge_type: str | None = None,
 ) -> str:
     """Build an OpenNebula VXLAN virtual-network template."""
-    network = ipaddress.ip_network(cidr, strict=False)
-    if not isinstance(network, ipaddress.IPv4Network):
+    parsed_cidr = ipaddress.ip_network(cidr, strict=False)
+    if not isinstance(parsed_cidr, ipaddress.IPv4Network):
         raise ValueError("Only IPv4 CIDRs are supported for OpenNebula virtual networks")
 
     lines = [
@@ -359,8 +359,6 @@ def build_vnet_template(
         f"VN_MAD = {quote(vn_mad)}",
         f"PHYDEV = {quote(phydev)}",
         f"VXLAN_MODE = {quote(vxlan_mode)}",
-        f"NETWORK_ADDRESS = {quote(network.network_address)}",
-        f"NETWORK_MASK = {quote(network.netmask)}",
         'AUTOMATIC_VLAN_ID = "YES"',
     ]
     if bridge_type:
