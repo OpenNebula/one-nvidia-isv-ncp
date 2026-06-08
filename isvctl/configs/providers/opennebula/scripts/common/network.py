@@ -282,10 +282,24 @@ def split_subnets(cidr: str, subnet_count: int) -> list[ipaddress.IPv4Network]:
     return list(network.subnets(new_prefix=new_prefix))[:subnet_count]
 
 
-def subnet_to_ar(subnet: ipaddress.IPv4Network) -> dict[str, Any]:
+def subnet_to_ar(
+    subnet: ipaddress.IPv4Network,
+    *,
+    ar_ip: str | None = None,
+    ar_size: int | None = None,
+) -> dict[str, Any]:
     """Convert a subnet CIDR to an OpenNebula IPv4 address-range template."""
-    usable_hosts = max(subnet.num_addresses - 2, 1)
-    first_ip = subnet.network_address + 1 if subnet.num_addresses > 2 else subnet.network_address
+    if ar_ip:
+        first_ip = ipaddress.ip_address(ar_ip)
+        if first_ip not in subnet:
+            raise ValueError(f"Address-range IP {ar_ip} is not inside {subnet}")
+    else:
+        first_ip = subnet.network_address + 1 if subnet.num_addresses > 2 else subnet.network_address
+
+    usable_hosts = ar_size if ar_size is not None else max(subnet.num_addresses - 2, 1)
+    if usable_hosts < 1:
+        raise ValueError("Address-range size must be at least 1")
+
     return {
         "TYPE": "IP4",
         "IP": str(first_ip),
@@ -293,7 +307,14 @@ def subnet_to_ar(subnet: ipaddress.IPv4Network) -> dict[str, Any]:
     }
 
 
-def build_subnet_outputs(network_id: str | int, cidr: str, subnet_count: int, zone: str) -> list[dict[str, Any]]:
+def build_subnet_outputs(
+    network_id: str | int,
+    cidr: str,
+    subnet_count: int,
+    zone: str,
+    *,
+    ar_size: int | None = None,
+) -> list[dict[str, Any]]:
     """Return provider-neutral subnet records for OpenNebula address ranges."""
     subnets = split_subnets(cidr, subnet_count)
     return [
@@ -303,7 +324,7 @@ def build_subnet_outputs(network_id: str | int, cidr: str, subnet_count: int, zo
             "az": zone,
             "availability_zone": zone,
             "auto_assign_public_ip": False,
-            "available_ips": max(subnet.num_addresses - 2, 1),
+            "available_ips": ar_size if ar_size is not None and subnet_count == 1 else max(subnet.num_addresses - 2, 1),
         }
         for index, subnet in enumerate(subnets)
     ]
@@ -319,20 +340,48 @@ def build_vnet_template(
     vn_mad: str,
     vxlan_mode: str,
     description: str,
+    ar_ip: str | None = None,
+    ar_size: int | None = None,
+    guest_mtu: str | None = None,
+    ip_link_conf: str | None = None,
+    filter_ip_spoofing: str | None = None,
+    filter_mac_spoofing: str | None = None,
+    bridge_type: str | None = None,
 ) -> str:
     """Build an OpenNebula VXLAN virtual-network template."""
+    network = ipaddress.ip_network(cidr, strict=False)
+    if not isinstance(network, ipaddress.IPv4Network):
+        raise ValueError("Only IPv4 CIDRs are supported for OpenNebula virtual networks")
+
     lines = [
         f"NAME = {quote(name)}",
         f"DESCRIPTION = {quote(description)}",
         f"VN_MAD = {quote(vn_mad)}",
         f"PHYDEV = {quote(phydev)}",
-        f"SECURITY_GROUPS = {quote(security_groups)}",
         f"VXLAN_MODE = {quote(vxlan_mode)}",
+        f"NETWORK_ADDRESS = {quote(network.network_address)}",
+        f"NETWORK_MASK = {quote(network.netmask)}",
         'AUTOMATIC_VLAN_ID = "YES"',
     ]
+    if bridge_type:
+        lines.append(f"BRIDGE_TYPE = {quote(bridge_type)}")
+    if security_groups:
+        lines.append(f"SECURITY_GROUPS = {quote(security_groups)}")
+    if guest_mtu:
+        lines.append(f"GUEST_MTU = {quote(guest_mtu)}")
+    if ip_link_conf:
+        lines.append(f"IP_LINK_CONF = {quote(ip_link_conf)}")
+    if filter_ip_spoofing:
+        lines.append(f"FILTER_IP_SPOOFING = {quote(filter_ip_spoofing)}")
+    if filter_mac_spoofing:
+        lines.append(f"FILTER_MAC_SPOOFING = {quote(filter_mac_spoofing)}")
 
-    for subnet in split_subnets(cidr, subnet_count):
-        ar = subnet_to_ar(subnet)
+    subnets = split_subnets(cidr, subnet_count)
+    if (ar_ip or ar_size is not None) and len(subnets) != 1:
+        raise ValueError("Custom address-range IP/size is only supported for single-subnet virtual networks")
+
+    for subnet in subnets:
+        ar = subnet_to_ar(subnet, ar_ip=ar_ip, ar_size=ar_size)
         lines.extend(
             [
                 "AR = [",
@@ -359,6 +408,13 @@ def create_vnet(
     vn_mad: str,
     vxlan_mode: str,
     zone: str,
+    ar_ip: str | None = None,
+    ar_size: int | None = None,
+    guest_mtu: str | None = None,
+    ip_link_conf: str | None = None,
+    filter_ip_spoofing: str | None = None,
+    filter_mac_spoofing: str | None = None,
+    bridge_type: str | None = None,
 ) -> dict[str, Any]:
     """Create an OpenNebula VXLAN virtual network and return contract fields."""
     one = get_one_server(xmlrpc_url, auth)
@@ -371,6 +427,13 @@ def create_vnet(
         vn_mad=vn_mad,
         vxlan_mode=vxlan_mode,
         description="Created by isvctl network validation",
+        ar_ip=ar_ip,
+        ar_size=ar_size,
+        guest_mtu=guest_mtu,
+        ip_link_conf=ip_link_conf,
+        filter_ip_spoofing=filter_ip_spoofing,
+        filter_mac_spoofing=filter_mac_spoofing,
+        bridge_type=bridge_type,
     )
     network_id = allocate_vnet(one, template, cluster_id)
     wait_for_vnet(one, network_id)
@@ -378,7 +441,7 @@ def create_vnet(
     return {
         "network_id": str(network_id),
         "cidr": cidr,
-        "subnets": build_subnet_outputs(network_id, cidr, subnet_count, zone),
+        "subnets": build_subnet_outputs(network_id, cidr, subnet_count, zone, ar_size=ar_size),
         "security_group_id": security_groups,
         "vn_mad": vn_mad,
         "phydev": phydev,
