@@ -15,6 +15,7 @@
 #   4f. Security group subnet scoping
 #   5. Connectivity
 #   6. Traffic validation
+#   7. VPC IP configuration
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -324,10 +325,41 @@ commands:
         timeout: 900
         output_schema: traffic_flow
 
+      # Test 7: DNS/search-domain network-context rendering on the NAT network.
+      - name: vpc_ip_config
+        phase: test
+        command: "python3 ../scripts/network/vpc_ip_config_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--cidr"
+          - "{{vpc_ip_cidr}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+          - "--network-nic-id"
+          - "{{vpc_ip_nic_id}}"
+          - "--expected-dns"
+          - "{{vpc_ip_dns}}"
+          - "--expected-search-domain"
+          - "{{vpc_ip_search_domain}}"
+          - "--available-ips"
+          - "{{vpc_ip_available_ips}}"
+        timeout: 900
+        output_schema: vpc_ip_config
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # vpc_ip_config, dhcp_ip_test, workload/service SG scoping, port policy,
-      # SDN logging, BYOIP, stable/floating IP, DNS, peering, and fabric
-      # topology checks.
+      # dhcp_ip_test, workload/service SG scoping, port policy, SDN logging,
+      # BYOIP, stable/floating IP, DNS, peering, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -372,6 +404,11 @@ tests:
     traffic_filter_ip_spoofing: "{{env.ONE_NETWORK_TRAFFIC_FILTER_IP_SPOOFING | default('NO')}}"
     traffic_filter_mac_spoofing: "{{env.ONE_NETWORK_TRAFFIC_FILTER_MAC_SPOOFING | default('NO')}}"
     traffic_bridge_type: "{{env.ONE_NETWORK_TRAFFIC_BRIDGE_TYPE | default('linux')}}"
+    vpc_ip_cidr: "{{env.ONE_NETWORK_VPC_IP_CIDR | default('172.20.0.0/24')}}"
+    vpc_ip_nic_id: "{{env.ONE_NETWORK_VPC_IP_NIC_ID | default('1')}}"
+    vpc_ip_dns: "{{env.ONE_NETWORK_VPC_IP_DNS | default('1.1.1.1')}}"
+    vpc_ip_search_domain: "{{env.ONE_NETWORK_VPC_IP_SEARCH_DOMAIN | default('opennebula.io')}}"
+    vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
     template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
@@ -387,10 +424,12 @@ tests:
           step: subnet_config
           min_subnets: 4
           require_multi_az: false
+        VpcIpConfigCheck:
+          step: vpc_ip_config
+          auto_assign_ip_mode: instance
 
   exclude:
     tests:
-      - VpcIpConfigCheck
       - DhcpIpManagementCheck
       - SgWorkloadScopingCheck
       - SgServiceScopingCheck
