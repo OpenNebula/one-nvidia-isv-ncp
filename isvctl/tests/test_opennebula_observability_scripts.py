@@ -92,33 +92,35 @@ def test_opennebula_host_syslogs_fails_empty_log(tmp_path: Path) -> None:
     assert result["tests"]["entries_recent"]["passed"] is False
 
 
-def test_opennebula_bmc_sel_logs_emits_provider_hidden_contract() -> None:
-    """OpenNebula BMC SEL check follows the AWS provider-hidden contract."""
+def test_opennebula_bmc_sel_logs_fails_not_implemented() -> None:
+    """OpenNebula BMC SEL check fails until a real implementation exists."""
     script = _load_script("log_availability_test.py")
 
     result = script.check_bmc_sel_logs(region="opennebula")
 
-    assert result["success"] is True
+    assert result["success"] is False
     assert result["test_name"] == "bmc_sel_logs"
+    assert result["error"] == "Not implemented - OpenNebula BMC validation is not implemented"
     assert set(result["tests"]) == {
         "sel_log_endpoint_reachable",
         "sel_log_source_present",
         "sel_entries_queryable",
     }
     for subtest in result["tests"].values():
-        assert subtest["passed"] is True
-        assert subtest["provider_hidden"] is True
+        assert subtest["passed"] is False
+        assert "Not implemented" in subtest["error"]
         assert subtest["probes"]["bmc_endpoints_checked"] == 0
 
 
-def test_opennebula_bmc_gpu_telemetry_emits_provider_hidden_contract() -> None:
-    """OpenNebula BMC GPU telemetry check follows the AWS provider-hidden contract."""
+def test_opennebula_bmc_gpu_telemetry_fails_not_implemented() -> None:
+    """OpenNebula BMC GPU telemetry check fails until a real implementation exists."""
     script = _load_script("log_availability_test.py")
 
     result = script.check_bmc_gpu_telemetry(region="opennebula")
 
-    assert result["success"] is True
+    assert result["success"] is False
     assert result["test_name"] == "bmc_gpu_telemetry"
+    assert result["error"] == "Not implemented - OpenNebula BMC validation is not implemented"
     assert set(result["tests"]) == {
         "telemetry_endpoint_reachable",
         "gpu_metrics_present",
@@ -126,6 +128,6 @@ def test_opennebula_bmc_gpu_telemetry_emits_provider_hidden_contract() -> None:
         "telemetry_samples_recent",
     }
     for subtest in result["tests"].values():
-        assert subtest["passed"] is True
-        assert subtest["provider_hidden"] is True
+        assert subtest["passed"] is False
+        assert "Not implemented" in subtest["error"]
         assert subtest["probes"]["bmc_endpoints_checked"] == 0

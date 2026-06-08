@@ -4,8 +4,8 @@
 # OpenNebula Observability Validation Configuration
 #
 # Uses local/provider log evidence for network flow-log and host syslog checks.
-# BMC SEL and GPU telemetry follow the AWS provider-hidden pattern when the BMC
-# plane is not customer-accessible from the OpenNebula tenant environment.
+# BMC SEL and GPU telemetry are wired as explicit failures until real OpenNebula
+# BMC/Redfish probes are implemented.
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/observability.yaml

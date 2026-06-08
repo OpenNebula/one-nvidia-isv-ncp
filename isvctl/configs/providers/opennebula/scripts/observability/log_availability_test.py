@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,9 +40,7 @@ ASPECT_TESTS: dict[str, list[str]] = {
     ],
 }
 
-OPENNEBULA_NO_CUSTOMER_BMC_MESSAGE = (
-    "OpenNebula tenant validation does not receive customer-accessible BMC SEL logs or Redfish GPU telemetry"
-)
+OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE = "Not implemented - OpenNebula BMC validation is not implemented"
 
 SYSLOG_WITH_YEAR = re.compile(r"^(?P<stamp>[A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})")
 SYSLOG_NO_YEAR = re.compile(r"^(?P<stamp>[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2})")
@@ -65,16 +63,12 @@ def _failed(error: str, probes: dict[str, Any] | None = None) -> dict[str, Any]:
     return result
 
 
-def _provider_hidden(test_name: str, *, region: str) -> dict[str, Any]:
-    """Build a passing provider-hidden result for customer-inaccessible BMC surfaces."""
+def _not_implemented(test_name: str, *, region: str) -> dict[str, Any]:
+    """Build a failing result for unimplemented BMC surfaces."""
     return {
-        "passed": True,
-        "provider_hidden": True,
+        "passed": False,
+        "error": f"{test_name}: {OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE} in region {region}",
         "probes": {"bmc_endpoints_checked": 0},
-        "message": (
-            f"{test_name}: {OPENNEBULA_NO_CUSTOMER_BMC_MESSAGE} in region {region}; "
-            "BMC plane is operator-owned."
-        ),
     }
 
 
@@ -108,12 +102,12 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
         except ValueError:
             return match.group("stamp")
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed.isoformat()
 
     if match := SYSLOG_WITH_YEAR.match(line):
         try:
-            parsed = datetime.strptime(match.group("stamp"), "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(match.group("stamp"), "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
         except ValueError:
             return match.group("stamp")
         return parsed.isoformat()
@@ -121,7 +115,7 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
     if match := SYSLOG_NO_YEAR.match(line):
         try:
             parsed = datetime.strptime(f"{match.group('stamp')} {now.year}", "%b %d %H:%M:%S %Y").replace(
-                tzinfo=timezone.utc
+                tzinfo=UTC
             )
         except ValueError:
             return match.group("stamp")
@@ -133,7 +127,7 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
 def _count_log_entries(path: Path, *, max_age_minutes: int, max_bytes: int) -> tuple[int, str]:
     """Return count and latest timestamp for entries in the sampling window."""
     text = _recent_log_text(path, max_bytes)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(minutes=max_age_minutes)
     entry_count = 0
     latest_timestamp = ""
@@ -148,13 +142,13 @@ def _count_log_entries(path: Path, *, max_age_minutes: int, max_bytes: int) -> t
             except ValueError:
                 parsed = now
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             if parsed < cutoff:
                 continue
             latest_timestamp = timestamp
         else:
             latest_timestamp = path.stat().st_mtime_ns and datetime.fromtimestamp(
-                path.stat().st_mtime, timezone.utc
+                path.stat().st_mtime, UTC
             ).isoformat()
         entry_count += 1
 
@@ -254,18 +248,18 @@ def check_host_syslogs(*, host_log_path: Path, max_age_minutes: int, max_bytes: 
 
 
 def check_bmc_sel_logs(*, region: str) -> dict[str, Any]:
-    """Emit OpenNebula provider-hidden evidence for customer-inaccessible BMC SEL logs."""
+    """Emit explicit failure for unimplemented OpenNebula BMC SEL logs."""
     result = _base_result("bmc_sel_logs")
-    result["success"] = True
-    result["tests"] = {name: _provider_hidden(name, region=region) for name in ASPECT_TESTS["bmc_sel_logs"]}
+    result["error"] = OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE
+    result["tests"] = {name: _not_implemented(name, region=region) for name in ASPECT_TESTS["bmc_sel_logs"]}
     return result
 
 
 def check_bmc_gpu_telemetry(*, region: str) -> dict[str, Any]:
-    """Emit OpenNebula provider-hidden evidence for customer-inaccessible BMC GPU telemetry."""
+    """Emit explicit failure for unimplemented OpenNebula BMC GPU telemetry."""
     result = _base_result("bmc_gpu_telemetry")
-    result["success"] = True
-    result["tests"] = {name: _provider_hidden(name, region=region) for name in ASPECT_TESTS["bmc_gpu_telemetry"]}
+    result["error"] = OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE
+    result["tests"] = {name: _not_implemented(name, region=region) for name in ASPECT_TESTS["bmc_gpu_telemetry"]}
     return result
 
 
