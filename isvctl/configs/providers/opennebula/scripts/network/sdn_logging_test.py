@@ -152,11 +152,14 @@ def check_latency_perf_logging(
     network_id: str,
     vm_id: str,
     sample_window_seconds: int,
+    monitoring_wait_timeout: int,
+    poll_interval_seconds: float,
 ) -> dict[str, Any]:
     """Validate OpenNebula VM monitoring fields used as performance telemetry."""
     result = _base_result("latency_perf", network_id, region, vm_id)
     result["telemetry_namespace"] = TELEMETRY_NAMESPACE
     result["sample_window_seconds"] = sample_window_seconds
+    result["monitoring_wait_timeout"] = monitoring_wait_timeout
 
     if sample_window_seconds <= 0:
         error = "--sample-window-seconds must be greater than 0"
@@ -164,74 +167,105 @@ def check_latency_perf_logging(
             result["tests"][name] = _failed(error)
         result["error"] = error
         return result
-
-    try:
-        vm_info = one.vm.info(int(vm_id))
-    except Exception as e:
-        error = f"Could not inspect OpenNebula VM {vm_id}: {e}"
+    if monitoring_wait_timeout < 0:
+        error = "--monitoring-wait-timeout must be non-negative"
+        for name in ASPECT_TESTS["latency_perf"]:
+            result["tests"][name] = _failed(error)
+        result["error"] = error
+        return result
+    if poll_interval_seconds <= 0:
+        error = "--poll-interval-seconds must be greater than 0"
         for name in ASPECT_TESTS["latency_perf"]:
             result["tests"][name] = _failed(error)
         result["error"] = error
         return result
 
-    monitoring = _get_field(vm_info, "MONITORING")
-    if monitoring is None:
-        error = f"VM {vm_id} has no MONITORING section"
-        result["tests"]["metrics_endpoint_reachable"] = _failed(error)
-        for name in ("performance_metric_present", "packet_metric_present", "samples_recent"):
-            result["tests"][name] = _failed(error)
-        result["error"] = error
-        return result
+    deadline = time.monotonic() + monitoring_wait_timeout
+    attempt = 0
 
-    fields = _field_names(monitoring)
-    result["metric_values"] = _metric_snapshot(monitoring)
-    result["tests"]["metrics_endpoint_reachable"] = _passed(
-        "OpenNebula VM monitoring endpoint returned MONITORING data",
-        monitoring_fields=fields,
-    )
+    while True:
+        attempt += 1
+        result["monitoring_attempts"] = attempt
+        try:
+            vm_info = one.vm.info(int(vm_id))
+        except Exception as e:
+            error = f"Could not inspect OpenNebula VM {vm_id}: {e}"
+            for name in ASPECT_TESTS["latency_perf"]:
+                result["tests"][name] = _failed(error)
+            result["error"] = error
+        else:
+            monitoring = _get_field(vm_info, "MONITORING")
+            if monitoring is None:
+                error = f"VM {vm_id} has no MONITORING section"
+                result["tests"]["metrics_endpoint_reachable"] = _failed(error)
+                for name in ("performance_metric_present", "packet_metric_present", "samples_recent"):
+                    result["tests"][name] = _failed(error)
+                result["error"] = error
+            else:
+                fields = _field_names(monitoring)
+                result["metric_values"] = _metric_snapshot(monitoring)
+                result["tests"]["metrics_endpoint_reachable"] = _passed(
+                    "OpenNebula VM monitoring endpoint returned MONITORING data",
+                    monitoring_fields=fields,
+                )
 
-    perf_ok, missing_perf = _check_required_numeric_fields(monitoring, PERFORMANCE_METRICS)
-    result["tests"]["performance_metric_present"] = (
-        _passed(
-            "OpenNebula network bandwidth metrics are present",
-            metrics={field: result["metric_values"][field] for field in PERFORMANCE_METRICS},
-        )
-        if perf_ok
-        else _failed(f"Missing numeric OpenNebula performance metric(s): {missing_perf}", monitoring_fields=fields)
-    )
+                perf_ok, missing_perf = _check_required_numeric_fields(monitoring, PERFORMANCE_METRICS)
+                result["tests"]["performance_metric_present"] = (
+                    _passed(
+                        "OpenNebula network bandwidth metrics are present",
+                        metrics={field: result["metric_values"][field] for field in PERFORMANCE_METRICS},
+                    )
+                    if perf_ok
+                    else _failed(
+                        f"Missing numeric OpenNebula performance metric(s): {missing_perf}",
+                        monitoring_fields=fields,
+                    )
+                )
 
-    packet_ok, missing_packet = _check_required_numeric_fields(monitoring, PACKET_METRICS)
-    result["tests"]["packet_metric_present"] = (
-        _passed(
-            "OpenNebula network byte counters are present",
-            metrics={field: result["metric_values"][field] for field in PACKET_METRICS},
-        )
-        if packet_ok
-        else _failed(f"Missing numeric OpenNebula packet/counter metric(s): {missing_packet}", monitoring_fields=fields)
-    )
+                packet_ok, missing_packet = _check_required_numeric_fields(monitoring, PACKET_METRICS)
+                result["tests"]["packet_metric_present"] = (
+                    _passed(
+                        "OpenNebula network byte counters are present",
+                        metrics={field: result["metric_values"][field] for field in PACKET_METRICS},
+                    )
+                    if packet_ok
+                    else _failed(
+                        f"Missing numeric OpenNebula packet/counter metric(s): {missing_packet}",
+                        monitoring_fields=fields,
+                    )
+                )
 
-    timestamp, age_seconds = _timestamp_age_seconds(monitoring, time.time())
-    result["monitoring_timestamp"] = timestamp
-    result["sample_age_seconds"] = age_seconds
-    result["tests"]["samples_recent"] = (
-        _passed(
-            "OpenNebula monitoring sample is recent",
-            timestamp=timestamp,
-            age_seconds=age_seconds,
-            sample_window_seconds=sample_window_seconds,
-        )
-        if timestamp is not None and age_seconds is not None and age_seconds <= sample_window_seconds
-        else _failed(
-            "OpenNebula monitoring sample is missing or stale",
-            timestamp=timestamp,
-            age_seconds=age_seconds,
-            sample_window_seconds=sample_window_seconds,
-        )
-    )
+                timestamp, age_seconds = _timestamp_age_seconds(monitoring, time.time())
+                result["monitoring_timestamp"] = timestamp
+                result["sample_age_seconds"] = age_seconds
+                result["tests"]["samples_recent"] = (
+                    _passed(
+                        "OpenNebula monitoring sample is recent",
+                        timestamp=timestamp,
+                        age_seconds=age_seconds,
+                        sample_window_seconds=sample_window_seconds,
+                    )
+                    if timestamp is not None and age_seconds is not None and age_seconds <= sample_window_seconds
+                    else _failed(
+                        "OpenNebula monitoring sample is missing or stale",
+                        timestamp=timestamp,
+                        age_seconds=age_seconds,
+                        sample_window_seconds=sample_window_seconds,
+                    )
+                )
+
+                if all(test.get("passed") for test in result["tests"].values()):
+                    break
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval_seconds)
 
     result["success"] = all(test.get("passed") for test in result["tests"].values())
     result["status"] = "passed" if result["success"] else "failed"
-    if not result["success"]:
+    if result["success"]:
+        result.pop("error", None)
+    else:
         result["error"] = "SDN latency/performance logging checks failed"
     return result
 
@@ -259,6 +293,8 @@ def run_aspect(args: argparse.Namespace) -> dict[str, Any]:
         network_id=args.network_id,
         vm_id=args.vm_id,
         sample_window_seconds=args.sample_window_seconds,
+        monitoring_wait_timeout=args.monitoring_wait_timeout,
+        poll_interval_seconds=args.poll_interval_seconds,
     )
 
 
@@ -276,6 +312,18 @@ def main() -> int:
         type=int,
         default=900,
         help="Maximum age of MONITORING.TIMESTAMP accepted as recent",
+    )
+    parser.add_argument(
+        "--monitoring-wait-timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for OpenNebula VM.MONITORING metrics to appear",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=10.0,
+        help="Seconds between VM.MONITORING polling attempts",
     )
     args = parser.parse_args()
 

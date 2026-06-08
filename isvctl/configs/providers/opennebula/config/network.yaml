@@ -465,7 +465,11 @@ commands:
           - "latency_perf"
           - "--sample-window-seconds"
           - "{{sdn_perf_sample_window_seconds}}"
-        timeout: 180
+          - "--monitoring-wait-timeout"
+          - "{{sdn_perf_monitoring_wait_timeout}}"
+          - "--poll-interval-seconds"
+          - "{{sdn_perf_poll_interval_seconds}}"
+        timeout: 420
 
       # Test 10: Private NIC IP stability across VM poweroff/resume.
       - name: stable_ip_test
@@ -586,6 +590,8 @@ tests:
     vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
     dhcp_ip_private_nic_id: "{{env.ONE_NETWORK_DHCP_IP_PRIVATE_NIC_ID | default('1')}}"
     sdn_perf_sample_window_seconds: "{{env.ONE_NETWORK_SDN_PERF_SAMPLE_WINDOW_SECONDS | default('900')}}"
+    sdn_perf_monitoring_wait_timeout: "{{env.ONE_NETWORK_SDN_PERF_MONITORING_WAIT_TIMEOUT | default('300')}}"
+    sdn_perf_poll_interval_seconds: "{{env.ONE_NETWORK_SDN_PERF_POLL_INTERVAL_SECONDS | default('10')}}"
     port_policy_allowed_port: "{{env.ONE_NETWORK_PORT_POLICY_ALLOWED_PORT | default('8443')}}"
     stable_ip_private_nic_id: "{{env.ONE_NETWORK_STABLE_IP_PRIVATE_NIC_ID | default('1')}}"
     stable_egress_endpoint: "{{env.ONE_NETWORK_STABLE_EGRESS_ENDPOINT | default('https://api.ipify.org')}}"
