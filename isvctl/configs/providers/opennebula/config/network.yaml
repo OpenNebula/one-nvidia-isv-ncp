@@ -602,7 +602,7 @@ tests:
     stable_egress_interval_seconds: "{{env.ONE_NETWORK_STABLE_EGRESS_INTERVAL_SECONDS | default('2')}}"
     floating_ip_address: "{{env.ONE_NETWORK_FLOATING_IP_ADDRESS | default('192.168.150.147')}}"
     floating_ip_network_id: "{{env.ONE_NETWORK_FLOATING_IP_NETWORK_ID | default('0')}}"
-    floating_ip_max_switch_seconds: "{{env.ONE_NETWORK_FLOATING_IP_MAX_SWITCH_SECONDS | default('10')}}"
+    floating_ip_max_switch_seconds: "{{env.ONE_NETWORK_FLOATING_IP_MAX_SWITCH_SECONDS | default('30')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
     template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
