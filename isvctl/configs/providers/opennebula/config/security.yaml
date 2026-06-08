@@ -102,6 +102,13 @@ commands:
         continue_on_failure: true
         timeout: 60
 
+      - name: tenant_isolation_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "tenant_isolation_test"]
+        continue_on_failure: true
+        timeout: 60
+
       - name: least_privilege_test
         phase: test
         command: "python3 ../scripts/security/least_privilege_test.py"
@@ -269,6 +276,11 @@ tests:
       checks:
         MinimalRoleEnforcementCheck:
           step: minimal_role_enforcement_test
+
+    tenant_isolation:
+      checks:
+        TenantIsolationCheck:
+          step: tenant_isolation_test
 
     service_account_auth:
       checks:

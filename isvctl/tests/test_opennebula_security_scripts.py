@@ -242,6 +242,15 @@ def test_opennebula_centralized_kms_fails_not_implemented() -> None:
                 "discovery_and_jwks_reachable",
             },
         ),
+        (
+            "tenant_isolation_test",
+            {
+                "network_isolated",
+                "data_isolated",
+                "compute_isolated",
+                "storage_isolated",
+            },
+        ),
     ],
 )
 def test_opennebula_security_checks_fail_not_implemented(aspect: str, expected_tests: set[str]) -> None:
@@ -254,6 +263,9 @@ def test_opennebula_security_checks_fail_not_implemented(aspect: str, expected_t
     assert payload["test_name"] == aspect
     assert payload["error"] == "Not implemented - OpenNebula security validation is not implemented"
     assert set(payload["tests"]) == expected_tests
+    if aspect == "tenant_isolation_test":
+        assert payload["tenant_a_id"] == "opennebula-tenant-a"
+        assert payload["tenant_b_id"] == "opennebula-tenant-b"
     for subtest in payload["tests"].values():
         assert subtest["passed"] is False
         assert "Not implemented" in subtest["error"]

@@ -56,6 +56,12 @@ TEST_KEYS: dict[str, list[str]] = {
         "missing_required_claim_rejected",
         "discovery_and_jwks_reachable",
     ],
+    "tenant_isolation_test": [
+        "network_isolated",
+        "data_isolated",
+        "compute_isolated",
+        "storage_isolated",
+    ],
 }
 
 NOT_IMPLEMENTED_MESSAGE = "Not implemented - OpenNebula security validation is not implemented"
@@ -63,7 +69,7 @@ NOT_IMPLEMENTED_MESSAGE = "Not implemented - OpenNebula security validation is n
 
 def build_result(*, aspect: str, region: str) -> dict[str, Any]:
     """Build provider-neutral failure output for an unimplemented security check."""
-    return {
+    result: dict[str, Any] = {
         "success": False,
         "platform": "security",
         "test_name": aspect,
@@ -77,6 +83,10 @@ def build_result(*, aspect: str, region: str) -> dict[str, Any]:
             for key in TEST_KEYS[aspect]
         },
     }
+    if aspect == "tenant_isolation_test":
+        result["tenant_a_id"] = "opennebula-tenant-a"
+        result["tenant_b_id"] = "opennebula-tenant-b"
+    return result
 
 
 def main() -> int:
