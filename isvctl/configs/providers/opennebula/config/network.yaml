@@ -13,6 +13,7 @@
 #   4c. Security policy propagation timing
 #   4e. Security group node scoping
 #   4f. Security group subnet scoping
+#   5. Connectivity
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -206,7 +207,7 @@ commands:
           - "--scope"
           - "node"
           - "--template-id"
-          - "{{base_template_id}}"
+          - "{{template_id}}"
           - "--nic-id"
           - "0"
           - "--xmlrpc-url"
@@ -240,10 +241,34 @@ commands:
           - "{{vxlan_mode}}"
         timeout: 120
 
+      # Test 5: VM connectivity across the shared validation virtual network.
+      - name: connectivity_test
+        phase: test
+        command: "python3 ../scripts/network/test_connectivity.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--vnet-id"
+          - "{{steps.create_network.network_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+        timeout: 900
+        output_schema: connectivity_result
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # connectivity_test, traffic_validation, vpc_ip_config, dhcp_ip_test,
-      # workload/service SG scoping, port policy, SDN logging, BYOIP,
-      # stable/floating IP, DNS, peering, and fabric topology checks.
+      # traffic_validation, vpc_ip_config, dhcp_ip_test, workload/service
+      # SG scoping, port policy, SDN logging, BYOIP, stable/floating IP, DNS,
+      # peering, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -273,7 +298,10 @@ tests:
     security_groups: "{{env.ONE_VNET_SECURITY_GROUPS | default('0')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
-    base_template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default(env.ONE_VM_TEMPLATE_ID | default('0'))}}"
+    template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
+    key_file: "{{env.ONE_VM_KEY_FILE}}"
+    ssh_user: "root"
+    ssh_nic_id: "{{env.ONE_NETWORK_SSH_NIC_ID | default('0')}}"
     teardown_flag: "{{(env.ONE_NETWORK_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   validations:
@@ -286,7 +314,6 @@ tests:
 
   exclude:
     tests:
-      - NetworkConnectivityCheck
       - TrafficFlowCheck
       - VpcIpConfigCheck
       - DhcpIpManagementCheck
