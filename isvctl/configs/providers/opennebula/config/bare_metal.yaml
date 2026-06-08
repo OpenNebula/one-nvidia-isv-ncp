@@ -297,24 +297,25 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
           - "{{teardown_flag}}"
         timeout: 600
 
       # Post-teardown sanitization: verify instance terminated and resources deleted
       - name: verify_teardown
         phase: teardown
-        skip: true
-        command: "python3 ../scripts/bare_metal/verify_terminated.py"
+        command: "python3 ../scripts/bare_metal/verify_teardown.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-          - "--security-group-id"
-          - "{{steps.launch_instance.security_group_id}}"
-          - "--key-name"
-          - "{{steps.launch_instance.key_name}}"
-        timeout: 120
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
+        timeout: 300
 
 tests:
   cluster_name: "opennebula-bm-validation"

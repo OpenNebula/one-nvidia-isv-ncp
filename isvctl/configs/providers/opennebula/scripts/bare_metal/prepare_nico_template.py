@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from typing import Any
 
 try:
@@ -24,27 +25,9 @@ def get_value(item: Any, key: str, default: Any = None) -> Any:
     return getattr(item, key, default)
 
 
-def as_list(value: Any) -> list[Any]:
-    """Normalize a pyone scalar-or-list value to a list."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
 def quote(value: str) -> str:
     """Quote a scalar value for an OpenNebula template."""
     return json.dumps(str(value))
-
-
-def find_template(one: Any, name: str) -> Any | None:
-    """Find a VM template by name."""
-    pool = one.templatepool.info(-1, -1, -1)
-    for template in as_list(get_value(pool, "VMTEMPLATE")):
-        if str(get_value(template, "NAME", "")) == name:
-            return template
-    return None
 
 
 def env_value(name: str) -> str:
@@ -77,8 +60,9 @@ def build_template(args: argparse.Namespace) -> str:
 def main() -> int:
     """Create or update a NICo VM template and emit its ID."""
     parser = argparse.ArgumentParser(description="Prepare OpenNebula NICo VM template")
-    parser.add_argument("--name", default="isv-bm-nico-template", help="VM template name")
+    parser.add_argument("--name", default="isv-bm-nico-template", help="VM template name prefix")
     args = parser.parse_args()
+    args.name = f"{args.name}-{uuid.uuid4().hex[:8]}"
     args.instance_type_id = env_value("ONE_BM_NICO_INSTANCE_TYPE_ID")
     args.os_id = env_value("ONE_BM_NICO_OS_ID")
     args.ssh_key_group_ids = env_value("ONE_BM_NICO_SSH_KEY_GROUP_IDS")
@@ -93,22 +77,12 @@ def main() -> int:
         "success": False,
         "platform": "bm",
         "template_name": args.name,
-        "created": False,
-        "updated": False,
     }
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
         template_body = build_template(args)
-        template = find_template(one, args.name)
-
-        if template is None:
-            template_id = int(one.template.allocate(template_body))
-            result["created"] = True
-        else:
-            template_id = int(get_value(template, "ID"))
-            one.template.update(template_id, template_body, 0)
-            result["updated"] = True
+        template_id = int(one.template.allocate(template_body))
 
         result["template_id"] = str(template_id)
         result["instance_type_id"] = args.instance_type_id

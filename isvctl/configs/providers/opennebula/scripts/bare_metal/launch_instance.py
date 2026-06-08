@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from typing import Any
 
 try:
@@ -196,6 +197,7 @@ def main() -> int:
         help="Seconds to wait for NICo DEPLOY_ID after RUNNING state",
     )
     args = parser.parse_args()
+    instance_name = f"{args.name}-{uuid.uuid4().hex[:8]}"
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
     auth = os.environ.get("ONE_AUTH", "oneadmin:opennebula")
@@ -205,11 +207,12 @@ def main() -> int:
         "platform": "bm",
         "instance_id": None,
         "instance_type": str(args.template_id),
+        "name": instance_name,
     }
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
-        vm_id = one.template.instantiate(args.template_id, args.name)
+        vm_id = one.template.instantiate(args.template_id, instance_name)
         result["instance_id"] = str(vm_id)
 
         start_time = time.time()

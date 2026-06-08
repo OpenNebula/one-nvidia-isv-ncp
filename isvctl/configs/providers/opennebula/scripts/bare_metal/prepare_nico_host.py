@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from typing import Any
 
 try:
@@ -24,24 +25,6 @@ def get_value(item: Any, key: str, default: Any = None) -> Any:
     return getattr(item, key, default)
 
 
-def as_list(value: Any) -> list[Any]:
-    """Normalize a pyone scalar-or-list value to a list."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def find_host(one: Any, name: str) -> Any | None:
-    """Find an OpenNebula host by name."""
-    pool = one.hostpool.info()
-    for host in as_list(get_value(pool, "HOST")):
-        if str(get_value(host, "NAME", "")) == name:
-            return host
-    return None
-
-
 def env_value(name: str) -> str:
     """Return a required environment value or raise a clear error."""
     value = os.environ.get(name, "")
@@ -53,8 +36,9 @@ def env_value(name: str) -> str:
 def main() -> int:
     """Create or update a NICo host and emit its ID."""
     parser = argparse.ArgumentParser(description="Prepare OpenNebula NICo host")
-    parser.add_argument("--name", default="nico", help="OpenNebula host name")
+    parser.add_argument("--name", default="isv-bm-nico-host", help="OpenNebula host name prefix")
     args = parser.parse_args()
+    host_name = f"{args.name}-{uuid.uuid4().hex[:8]}"
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
     auth = os.environ.get("ONE_AUTH", "oneadmin:opennebula")
@@ -62,20 +46,12 @@ def main() -> int:
     result: dict[str, Any] = {
         "success": False,
         "platform": "bm",
-        "host_name": args.name,
-        "created": False,
-        "updated": False,
+        "host_name": host_name,
     }
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
-        host = find_host(one, args.name)
-
-        if host is None:
-            host_id = int(one.host.allocate(args.name, "nico", "nico", 0))
-            result["created"] = True
-        else:
-            host_id = int(get_value(host, "ID"))
+        host_id = int(one.host.allocate(host_name, "nico", "nico", 0))
 
         attrs = {
             "NICO_CARBIDE_PROXY": env_value("ONE_BM_NICO_CARBIDE_PROXY"),
@@ -93,7 +69,6 @@ def main() -> int:
         one.host.update(host_id, merged, 1)
 
         result["host_id"] = str(host_id)
-        result["updated"] = True
         result["attributes"] = sorted(attrs.keys())
         result["success"] = True
 
