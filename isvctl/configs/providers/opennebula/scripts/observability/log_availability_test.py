@@ -94,6 +94,17 @@ def _recent_log_text(path: Path, max_bytes: int) -> str:
         return f.read().decode("utf-8", errors="replace")
 
 
+def _readability_error(path: Path, label: str) -> str | None:
+    """Return a concise error when a log path is missing or unreadable."""
+    try:
+        if not path.is_file():
+            return f"OpenNebula {label} path is not a readable file: {path}"
+        with path.open("rb"):
+            return None
+    except OSError as e:
+        return f"OpenNebula {label} path is not readable: {e}"
+
+
 def _parse_log_timestamp(line: str, *, now: datetime) -> str:
     """Parse common OpenNebula/syslog timestamps and return an ISO string."""
     if match := ISO_TIMESTAMP.match(line):
@@ -181,8 +192,7 @@ def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path | None, max_byte
         result["error"] = OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE
         return result
 
-    if not flow_log_path.is_file():
-        error = f"OpenNebula flow log path is not a readable file: {flow_log_path}"
+    if error := _readability_error(flow_log_path, "flow log"):
         for name in ASPECT_TESTS["vpc_flow_logs"]:
             result["tests"][name] = _failed(error, probes)
         result["error"] = error
@@ -221,8 +231,7 @@ def check_host_syslogs(*, host_log_path: Path, max_age_minutes: int, max_bytes: 
         result["error"] = error
         return result
 
-    if not host_log_path.is_file():
-        error = f"OpenNebula host syslog path is not a readable file: {host_log_path}"
+    if error := _readability_error(host_log_path, "host syslog"):
         for name in ASPECT_TESTS["host_syslogs"]:
             result["tests"][name] = _failed(error, probes)
         result["error"] = error

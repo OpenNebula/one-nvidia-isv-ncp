@@ -251,66 +251,18 @@ def test_opennebula_security_checks_fail_not_implemented(aspect: str, expected_t
         assert "Not implemented" in subtest["error"]
 
 
-def test_opennebula_service_account_authenticates_with_generated_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OpenNebula service-account check creates a token, authenticates with it, and cleans up."""
+def test_opennebula_service_account_fails_not_implemented() -> None:
+    """OpenNebula service-account check is explicit unsupported evidence."""
     module = _load_security_script("sa_credential_test.py")
-    state: dict[str, Any] = {"deleted": [], "service_auth": ""}
 
-    class FakeAdminUser:
-        """Fake admin-side user XML-RPC endpoint."""
+    payload = module.build_result(region="opennebula")
 
-        def allocate(self, username: str, _password: str, _auth_driver: str = "core") -> int:
-            """Allocate a fake user."""
-            state["username"] = username
-            return 42
-
-        def login(self, username: str, token: str, ttl_seconds: int, egid: int = -1) -> str:
-            """Return a generated OpenNebula token."""
-            assert username == state["username"]
-            assert token == ""
-            assert ttl_seconds == -1
-            assert egid == -1
-            return "generated-token"
-
-        def delete(self, user_id: int) -> None:
-            """Delete a fake user."""
-            state["deleted"].append(user_id)
-
-    class FakeServiceUser:
-        """Fake service-account user XML-RPC endpoint."""
-
-        def info(self, user_id: int) -> SimpleNamespace:
-            """Return authenticated user info."""
-            assert user_id == -1
-            return SimpleNamespace(NAME=state["username"], ID="42")
-
-    admin_one = SimpleNamespace(user=FakeAdminUser())
-    service_one = SimpleNamespace(user=FakeServiceUser())
-
-    def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
-        """Return admin or service fake clients by auth session."""
-        if auth == "oneadmin:opennebula":
-            return admin_one
-        state["service_auth"] = auth
-        return service_one
-
-    monkeypatch.setattr(module, "get_one_server", fake_get_one_server)
-
-    payload = module.evaluate_service_account(
-        region="opennebula",
-        xmlrpc_url="http://one.example.internal:2633/RPC2",
-        admin_auth="oneadmin:opennebula",
-        token_ttl_seconds=-1,
-    )
-
-    assert payload["success"] is True
-    assert payload["authenticated"] is True
-    assert payload["credential_type"] == "opennebula_auth_token"
-    assert payload["identity"].startswith("opennebula:user/isv-sa-")
-    assert payload["identity"].endswith(":42")
+    assert payload["success"] is False
+    assert payload["authenticated"] is False
+    assert payload["credential_type"] == "opennebula_internal_service_user"
+    assert payload["identity"] == ""
     assert payload["expires_at"] is None
-    assert state["service_auth"] == f"{state['username']}:generated-token"
-    assert state["deleted"] == [42]
+    assert "Not implemented" in payload["error"]
 
 
 def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scope(

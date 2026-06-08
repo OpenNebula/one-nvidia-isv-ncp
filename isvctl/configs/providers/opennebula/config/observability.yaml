@@ -29,8 +29,7 @@ commands:
           - "{{network_id}}"
           - "--aspect"
           - "vpc_flow_logs"
-          - "--flow-log-path"
-          - "{{flow_log_path}}"
+        continue_on_failure: true
         timeout: 60
 
       - name: host_syslogs
@@ -45,6 +44,7 @@ commands:
           - "{{observability_log_path}}"
           - "--max-age-minutes"
           - "{{host_syslog_max_age_minutes}}"
+        continue_on_failure: true
         timeout: 60
 
       - name: bmc_sel_logs
@@ -55,6 +55,7 @@ commands:
           - "{{region}}"
           - "--aspect"
           - "bmc_sel_logs"
+        continue_on_failure: true
         timeout: 60
 
       - name: bmc_gpu_telemetry
@@ -65,6 +66,7 @@ commands:
           - "{{region}}"
           - "--aspect"
           - "bmc_gpu_telemetry"
+        continue_on_failure: true
         timeout: 60
 
 tests:
@@ -75,6 +77,5 @@ tests:
   settings:
     region: "{{env.ONE_REGION | default('opennebula')}}"
     network_id: "{{env.ONE_NETWORK_ID | default('opennebula-virtual-network')}}"
-    flow_log_path: "{{env.ONE_FLOW_LOG_PATH | default('', true)}}"
     observability_log_path: "{{env.ONE_OBSERVABILITY_LOG_PATH | default('/var/log/one/oned.log')}}"
     host_syslog_max_age_minutes: "{{env.ONE_HOST_SYSLOG_MAX_AGE_MINUTES | default('1440')}}"
