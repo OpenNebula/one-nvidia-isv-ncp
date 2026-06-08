@@ -152,6 +152,7 @@ def _detach_alias_if_present(args: argparse.Namespace, one: Any, vm_id: str) -> 
     if nic_id is None:
         return False
     _detach_alias(args, vm_id, nic_id)
+    _wait_for_vm_running(one, vm_id, args.hotplug_wait_timeout)
     _wait_for_alias_state(
         one,
         vm_id,
@@ -192,6 +193,7 @@ def run_floating_ip_test(args: argparse.Namespace, one: Any | None = None) -> di
         )
 
         _attach_alias(args, vm_a)
+        _wait_for_vm_running(one, vm_a, args.hotplug_wait_timeout)
         alias_a = _wait_for_alias_state(
             one,
             vm_a,
@@ -217,6 +219,7 @@ def run_floating_ip_test(args: argparse.Namespace, one: Any | None = None) -> di
 
         start = time.monotonic()
         _detach_alias(args, vm_a, alias_a)
+        _wait_for_vm_running(one, vm_a, args.hotplug_wait_timeout)
         _wait_for_alias_state(
             one,
             vm_a,
@@ -226,6 +229,7 @@ def run_floating_ip_test(args: argparse.Namespace, one: Any | None = None) -> di
             timeout=args.alias_wait_timeout,
         )
         _attach_alias(args, vm_b)
+        _wait_for_vm_running(one, vm_b, args.hotplug_wait_timeout)
         alias_b = _wait_for_alias_state(
             one,
             vm_b,
@@ -308,6 +312,7 @@ def main() -> int:
     parser.add_argument("--max-switch-seconds", type=int, default=10, help="Validation threshold consumed upstream")
     parser.add_argument("--name-prefix", default="isv-floating-ip", help="Temporary VM name prefix")
     parser.add_argument("--vm-wait-timeout", type=int, default=600, help="Seconds to wait for VMs to run")
+    parser.add_argument("--hotplug-wait-timeout", type=int, default=180, help="Seconds to wait for NIC hotplug state")
     parser.add_argument("--alias-wait-timeout", type=int, default=120, help="Seconds to wait for alias state")
     args = parser.parse_args()
 
