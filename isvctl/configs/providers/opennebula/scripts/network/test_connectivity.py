@@ -65,11 +65,12 @@ def _private_nic_template(vnet_id: str | int) -> str:
     )
 
 
-def _instantiate_template_on_hold(one: Any, template_id: int, name: str) -> str:
-    """Instantiate a VM template on hold so test NICs can be attached before boot."""
+def _instantiate_template(one: Any, template_id: int, name: str) -> str:
+    """Instantiate a VM template and return the VM ID."""
     attempts = (
-        (template_id, name, True, "", False),
-        (template_id, name, True, ""),
+        (template_id, name, False, "", False),
+        (template_id, name, False, ""),
+        (template_id, name),
     )
     last_error: TypeError | None = None
     for args in attempts:
@@ -87,11 +88,6 @@ def _attach_private_nic(one: Any, vm_id: str, vnet_id: str) -> None:
         one.vm.attachnic(int(vm_id), _private_nic_template(vnet_id))
     except AttributeError:
         one.vm.attach_nic(int(vm_id), _private_nic_template(vnet_id))
-
-
-def _release_vm(one: Any, vm_id: str) -> None:
-    """Release a held VM so it can be scheduled and booted."""
-    one.vm.action("release", int(vm_id))
 
 
 def _wait_for_vm_running(one: Any, vm_id: str, timeout: int) -> Any:
@@ -239,10 +235,10 @@ def _wait_for_instance_record(
 
 
 def _launch_probe_vm(one: Any, template_id: int, name: str, vnet_id: str, wait_timeout: int) -> str:
-    """Instantiate a probe VM, attach the validation NIC, and wait for it to run."""
-    vm_id = _instantiate_template_on_hold(one, template_id, name)
+    """Instantiate a probe VM, hotplug the validation NIC, and wait for it to run."""
+    vm_id = _instantiate_template(one, template_id, name)
+    _wait_for_vm_running(one, vm_id, wait_timeout)
     _attach_private_nic(one, vm_id, vnet_id)
-    _release_vm(one, vm_id)
     _wait_for_vm_running(one, vm_id, wait_timeout)
     return vm_id
 
