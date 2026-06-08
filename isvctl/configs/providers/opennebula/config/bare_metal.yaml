@@ -17,7 +17,7 @@
 #
 # Imports validations from the provider-agnostic BM canonical config.
 # This file provides OpenNebula-specific commands, settings, and validation
-# overrides. Only launch_instance is implemented initially.
+# overrides for the NICo-backed OpenNebula bare-metal lifecycle.
 #
 # Steps:
 #   1. prepare_nico_host - pyone: Creates/updates the NICo host (setup)
@@ -30,7 +30,7 @@
 #   6. verify_config - boto3: Verifies install config can provision BM (test)
 #   7. stop_instance - boto3: Powers off BM node, verifies stopped state (test)
 #   8. start_instance - boto3: Powers on BM node, verifies recovery (test)
-#   9. reboot_instance - boto3: Reboots instance, validates recovery (test)
+#   9. reboot_instance - pyone: Reboots instance, validates recovery (test)
 #  10. power_cycle_instance - boto3: Hard power off + on, validates cold-start (test)
 #  11. describe_instance - boto3: Describes current state, passes SSH info (test)
 #                          (runs after power_cycle so IP is current)
@@ -91,34 +91,24 @@ commands:
           - "isv-bm-test-gpu"
           - "--template-id"
           - "{{steps.prepare_nico_template.template_id}}"
-        timeout: 1200
+        timeout: 8400
 
       # List instances in VPC - verifies instance is visible
-      # Reuses VM script (generic EC2 API)
       - name: list_instances
         phase: test
-        skip: true
-        command: "python3 ../scripts/vm/list_instances.py"
+        command: "python3 ../scripts/bare_metal/list_instances.py"
         args:
-          - "--vpc-id"
-          - "{{steps.launch_instance.vpc_id}}"
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
         timeout: 120
 
-      # Verify user-defined tags on BM instance (boto3)
-      # Reuses the VM describe_tags pattern (generic EC2 API)
+      # Verify user-defined tags on BM instance.
       - name: verify_tags
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/describe_tags.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
         timeout: 60
 
       # Topology-based placement validation (boto3)
@@ -199,15 +189,10 @@ commands:
       # BM-specific: longer waits for hardware POST/BIOS/OS boot
       - name: reboot_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/reboot_instance.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-          - "--public-ip"
-          - "{{steps.start_instance.public_ip}}"
         timeout: 1800
 
       # Power-cycle: hard power off + power on (cold start)
@@ -338,6 +323,23 @@ tests:
 
     cloud_init:
       step: launch_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    reboot_checks:
+      step: reboot_instance
+      checks:
+        - StepSuccessCheck: {}
+        - StableIdentifierCheck:
+            reference_id: "{{steps.launch_instance.instance_id}}"
+
+    reboot_ssh:
+      step: reboot_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    reboot_gpu:
+      step: reboot_instance
       checks:
         - StepSuccessCheck: {}
 
