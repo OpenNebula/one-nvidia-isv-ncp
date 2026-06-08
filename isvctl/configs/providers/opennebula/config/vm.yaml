@@ -206,7 +206,7 @@ tests:
     cloud_init:
       step: contextualization_check
       checks:
-        - StepSuccessCheck: {}
-        - FieldValueCheck:
+        - StepSuccessCheck-OpenNebulaCloudInitCheck: {}
+        - FieldValueCheck-OpenNebulaCloudInitCheckCompleted:
             field: "contextualization_completed"
             expected: true
