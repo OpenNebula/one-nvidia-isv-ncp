@@ -16,6 +16,7 @@
 #   5. Connectivity
 #   6. Traffic validation
 #   7. VPC IP configuration
+#   8. DHCP/IP management
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -357,9 +358,33 @@ commands:
         timeout: 900
         output_schema: vpc_ip_config
 
+      # Test 8: DHCP lease/IP/DNS checks on the private NAT network.
+      - name: dhcp_ip_test
+        phase: test
+        command: "python3 ../scripts/network/dhcp_ip_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+          - "--private-nic-id"
+          - "{{dhcp_ip_private_nic_id}}"
+        timeout: 900
+        output_schema: dhcp_ip
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # dhcp_ip_test, workload/service SG scoping, port policy, SDN logging,
-      # BYOIP, stable/floating IP, DNS, peering, and fabric topology checks.
+      # workload/service SG scoping, port policy, SDN logging, BYOIP,
+      # stable/floating IP, DNS, peering, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -373,6 +398,8 @@ commands:
           - "{{xmlrpc_url}}"
           - "--auth"
           - "{{auth}}"
+          - "--dhcp-instance-id"
+          - "{{steps.dhcp_ip_test.instance_id}}"
           - "{{teardown_flag}}"
         timeout: 300
         output_schema: teardown
@@ -409,6 +436,7 @@ tests:
     vpc_ip_dns: "{{env.ONE_NETWORK_VPC_IP_DNS | default('1.1.1.1')}}"
     vpc_ip_search_domain: "{{env.ONE_NETWORK_VPC_IP_SEARCH_DOMAIN | default('opennebula.io')}}"
     vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
+    dhcp_ip_private_nic_id: "{{env.ONE_NETWORK_DHCP_IP_PRIVATE_NIC_ID | default('1')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
     template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
@@ -427,10 +455,11 @@ tests:
         VpcIpConfigCheck:
           step: vpc_ip_config
           auto_assign_ip_mode: instance
+        DhcpIpManagementCheck:
+          step: dhcp_ip_test
 
   exclude:
     tests:
-      - DhcpIpManagementCheck
       - SgWorkloadScopingCheck
       - SgServiceScopingCheck
       - SgPortSecurityPolicyCheck
