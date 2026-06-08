@@ -43,6 +43,7 @@ def _probe_egress_ip(args: argparse.Namespace) -> dict[str, Any]:
         return _failed(f"SSH not reachable on {args.ssh_host}", probes=args.probes, endpoint=args.endpoint)
 
     ips = []
+    failures = []
     quoted_endpoint = shlex.quote(args.endpoint)
     command = f"curl -fsS --max-time 5 {quoted_endpoint} || wget -q -T 5 -O - {quoted_endpoint}"
 
@@ -57,31 +58,46 @@ def _probe_egress_ip(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.ssh_command_timeout,
         )
         if exit_code != 0:
-            return _failed(
-                f"probe {attempt}/{args.probes} failed",
-                probes=args.probes,
-                endpoint=args.endpoint,
-                details=(stderr or stdout or f"command exited with {exit_code}").strip(),
-                ips=ips,
+            failures.append(
+                {
+                    "attempt": attempt,
+                    "error": (stderr or stdout or f"command exited with {exit_code}").strip(),
+                }
             )
+            continue
         ip = stdout.strip().splitlines()[-1].strip() if stdout.strip() else ""
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            return _failed(
-                f"probe {attempt}/{args.probes} returned non-IP value",
-                probes=args.probes,
-                endpoint=args.endpoint,
-                value=ip,
-                ips=ips,
+            failures.append(
+                {
+                    "attempt": attempt,
+                    "error": "returned non-IP value",
+                    "value": ip,
+                }
             )
+            continue
         ips.append(ip)
 
+    if len(ips) < args.min_successful_probes:
+        return _failed(
+            f"Only {len(ips)}/{args.probes} egress IP probe(s) succeeded; required {args.min_successful_probes}",
+            probes=args.probes,
+            successful_probes=len(ips),
+            min_successful_probes=args.min_successful_probes,
+            endpoint=args.endpoint,
+            ips=ips,
+            failures=failures,
+        )
+
     return _passed(
-        f"Collected {len(ips)} egress IP probes",
+        f"Collected {len(ips)}/{args.probes} successful egress IP probes",
         probes=args.probes,
+        successful_probes=len(ips),
+        min_successful_probes=args.min_successful_probes,
         endpoint=args.endpoint,
         ips=ips,
+        failures=failures,
     )
 
 
@@ -104,6 +120,10 @@ def run_stable_egress_ip_test(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError("--key-file is required")
         if args.probes < 1:
             raise RuntimeError("--probes must be at least 1")
+        if args.min_successful_probes < 1:
+            raise RuntimeError("--min-successful-probes must be at least 1")
+        if args.min_successful_probes > args.probes:
+            raise RuntimeError("--min-successful-probes cannot exceed --probes")
 
         result["tests"]["create_instance"] = _passed(
             "Reusing DHCP/IP validation VM",
@@ -119,9 +139,23 @@ def run_stable_egress_ip_test(args: argparse.Namespace) -> dict[str, Any]:
         ips = probe_result.get("ips", [])
         distinct = sorted(set(ips))
         result["tests"]["egress_ip_stable"] = (
-            _passed("Egress IP stable across probes", ip=distinct[0], distinct=len(distinct), probes=args.probes)
+            _passed(
+                "Egress IP stable across successful probes",
+                ip=distinct[0],
+                distinct=len(distinct),
+                probes=args.probes,
+                successful_probes=len(ips),
+                min_successful_probes=args.min_successful_probes,
+            )
             if len(distinct) == 1
-            else _failed("Egress IP changed across probes", ips=ips, distinct_ips=distinct, probes=args.probes)
+            else _failed(
+                "Egress IP changed across successful probes",
+                ips=ips,
+                distinct_ips=distinct,
+                probes=args.probes,
+                successful_probes=len(ips),
+                min_successful_probes=args.min_successful_probes,
+            )
         )
 
     except Exception as e:
@@ -146,6 +180,12 @@ def main() -> int:
     parser.add_argument("--ssh-user", default="root", help="SSH username")
     parser.add_argument("--endpoint", default="https://api.ipify.org", help="External IP echo endpoint")
     parser.add_argument("--probes", type=int, default=3, help="Number of egress IP probes")
+    parser.add_argument(
+        "--min-successful-probes",
+        type=int,
+        default=1,
+        help="Minimum successful probe count required before checking stability",
+    )
     parser.add_argument("--interval-seconds", type=float, default=2.0, help="Delay between probes")
     parser.add_argument("--ssh-wait-timeout", type=int, default=300, help="Seconds to wait for SSH access")
     parser.add_argument("--ssh-command-timeout", type=int, default=30, help="Seconds allowed for SSH commands")

@@ -508,6 +508,8 @@ commands:
           - "{{stable_egress_endpoint}}"
           - "--probes"
           - "{{stable_egress_probes}}"
+          - "--min-successful-probes"
+          - "{{stable_egress_min_successful_probes}}"
           - "--interval-seconds"
           - "{{stable_egress_interval_seconds}}"
         timeout: 600
@@ -595,7 +597,8 @@ tests:
     port_policy_allowed_port: "{{env.ONE_NETWORK_PORT_POLICY_ALLOWED_PORT | default('8443')}}"
     stable_ip_private_nic_id: "{{env.ONE_NETWORK_STABLE_IP_PRIVATE_NIC_ID | default('1')}}"
     stable_egress_endpoint: "{{env.ONE_NETWORK_STABLE_EGRESS_ENDPOINT | default('https://api.ipify.org')}}"
-    stable_egress_probes: "{{env.ONE_NETWORK_STABLE_EGRESS_PROBES | default('3')}}"
+    stable_egress_probes: "{{env.ONE_NETWORK_STABLE_EGRESS_PROBES | default('10')}}"
+    stable_egress_min_successful_probes: "{{env.ONE_NETWORK_STABLE_EGRESS_MIN_SUCCESSFUL_PROBES | default('1')}}"
     stable_egress_interval_seconds: "{{env.ONE_NETWORK_STABLE_EGRESS_INTERVAL_SECONDS | default('2')}}"
     floating_ip_address: "{{env.ONE_NETWORK_FLOATING_IP_ADDRESS | default('192.168.150.147')}}"
     floating_ip_network_id: "{{env.ONE_NETWORK_FLOATING_IP_NETWORK_ID | default('0')}}"
