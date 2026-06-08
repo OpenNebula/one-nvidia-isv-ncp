@@ -156,14 +156,6 @@ def _attach_private_nic(one: Any, vm_id: str, vnet_id: str, sg_id: str) -> None:
         one.vm.attach_nic(int(vm_id), template)
 
 
-def _detach_nic(one: Any, vm_id: str, nic_id: int) -> None:
-    """Detach a NIC from a running VM."""
-    try:
-        one.vm.detachnic(int(vm_id), nic_id)
-    except AttributeError:
-        one.vm.detach_nic(int(vm_id), nic_id)
-
-
 def _create_traffic_security_groups(
     one: Any,
     suffix: str,
@@ -207,7 +199,6 @@ def _launch_traffic_vm(
     vm_wait_timeout: int,
     ip_wait_timeout: int,
     created_vm_ids: list[str],
-    detach_ssh_nic: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Launch one VM, attach the traffic-test NIC, and return its record."""
     vm_id = _instantiate_template(one, template_id, name)
@@ -217,13 +208,6 @@ def _launch_traffic_vm(
     _wait_for_vm_running(one, vm_id, vm_wait_timeout)
     record = _wait_for_instance_record(one, vm_id, vnet_id, ssh_nic_id, ip_wait_timeout)
     private_nic_id = _traffic_private_nic_id(one.vm.info(int(vm_id)), vnet_id)
-    if detach_ssh_nic and private_nic_id != ssh_nic_id:
-        _detach_nic(one, vm_id, ssh_nic_id)
-        _wait_for_vm_running(one, vm_id, vm_wait_timeout)
-        record["public_ip"] = None
-        record["ssh_nic_detached"] = True
-    else:
-        record["ssh_nic_detached"] = False
     record["private_nic_id"] = private_nic_id
     record["security_group_id"] = str(sg_id)
     return vm_id, record
@@ -271,7 +255,7 @@ def _verify_traffic_security_groups(
     records: dict[str, dict[str, Any]],
     network_id: str,
 ) -> dict[str, Any]:
-    """Verify the traffic NICs do not inherit default SG 0."""
+    """Verify the private traffic NICs use only the per-test security groups."""
     probes = []
     errors = []
 
@@ -283,7 +267,6 @@ def _verify_traffic_security_groups(
         private_nic_id = _nic_id(private_nic) if private_nic is not None else None
         private_sg_ids = _nic_security_group_ids(private_nic)
         rule_sg_ids = _security_group_rule_ids(vm_info)
-        target_role = role in {"target_allow", "target_deny"}
 
         probe = {
             "role": role,
@@ -291,23 +274,20 @@ def _verify_traffic_security_groups(
             "private_nic_id": private_nic_id,
             "private_nic_security_groups": sorted(private_sg_ids),
             "expanded_security_group_rule_ids": sorted(rule_sg_ids),
-            "ssh_nic_detached": bool(record.get("ssh_nic_detached")),
         }
         probes.append(probe)
 
         if private_nic is None:
             errors.append(f"{role}: traffic NIC on network {network_id} was not found")
             continue
-        if expected_sg_id not in private_sg_ids and expected_sg_id not in rule_sg_ids:
-            errors.append(f"{role}: expected SG {expected_sg_id} is not present on traffic NIC/rules")
-        if DEFAULT_SECURITY_GROUP_ID in private_sg_ids:
-            errors.append(f"{role}: default SG 0 is present on traffic NIC")
-        if target_role and DEFAULT_SECURITY_GROUP_ID in rule_sg_ids:
-            errors.append(f"{role}: default SG 0 is present in expanded VM SG rules")
+        if private_sg_ids != {expected_sg_id}:
+            errors.append(
+                f"{role}: private traffic NIC SGs are {sorted(private_sg_ids)}, expected only {expected_sg_id}"
+            )
 
     if errors:
-        return _failed("Default security group isolation failed", probes=probes, details="; ".join(errors))
-    return _passed("Traffic target VMs have isolated per-test security groups", probes=probes)
+        return _failed("Private traffic NIC security group isolation failed", probes=probes, details="; ".join(errors))
+    return _passed("Private traffic NICs have isolated per-test security groups", probes=probes)
 
 
 def _ping_via_ssh(
@@ -483,7 +463,6 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
                 vm_wait_timeout=args.vm_wait_timeout,
                 ip_wait_timeout=args.ip_wait_timeout,
                 created_vm_ids=vm_ids,
-                detach_ssh_nic=role in {"target_allow", "target_deny"},
             )
             record["role"] = role
             records[role] = record
@@ -494,7 +473,7 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
         result["tests"]["security_group_isolation"] = _verify_traffic_security_groups(one, records, network_id)
         if not result["tests"]["security_group_isolation"].get("passed"):
             result["tests"]["traffic_blocked"] = _failed(
-                "Default security group 0 leaked into traffic target VM policy",
+                "Default security group 0 leaked into private traffic NIC policy",
                 details=result["tests"]["security_group_isolation"].get("details", ""),
                 probes=result["tests"]["security_group_isolation"].get("probes", []),
             )
