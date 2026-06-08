@@ -55,7 +55,7 @@ def _get_field(item: Any, key: str, default: Any = None) -> Any:
 
 
 def _private_nic_template(vnet_id: str | int) -> str:
-    """Return an instantiate-time NIC override for the validation virtual network."""
+    """Return a NIC template for the validation virtual network."""
     return "\n".join(
         [
             "NIC = [",
@@ -65,12 +65,11 @@ def _private_nic_template(vnet_id: str | int) -> str:
     )
 
 
-def _instantiate_template(one: Any, template_id: int, name: str, extra_template: str) -> str:
-    """Instantiate a VM template with an extra OpenNebula template fragment."""
+def _instantiate_template_on_hold(one: Any, template_id: int, name: str) -> str:
+    """Instantiate a VM template on hold so test NICs can be attached before boot."""
     attempts = (
-        (template_id, name, False, extra_template),
-        (template_id, name, False, extra_template, False),
-        (template_id, name, extra_template),
+        (template_id, name, True, "", False),
+        (template_id, name, True, ""),
     )
     last_error: TypeError | None = None
     for args in attempts:
@@ -79,7 +78,20 @@ def _instantiate_template(one: Any, template_id: int, name: str, extra_template:
         except TypeError as e:
             last_error = e
 
-    raise RuntimeError(f"Could not call template.instantiate with an extra NIC template: {last_error}")
+    raise RuntimeError(f"Could not call template.instantiate: {last_error}")
+
+
+def _attach_private_nic(one: Any, vm_id: str, vnet_id: str) -> None:
+    """Attach the validation virtual network NIC to a VM without replacing template NICs."""
+    try:
+        one.vm.attachnic(int(vm_id), _private_nic_template(vnet_id))
+    except AttributeError:
+        one.vm.attach_nic(int(vm_id), _private_nic_template(vnet_id))
+
+
+def _release_vm(one: Any, vm_id: str) -> None:
+    """Release a held VM so it can be scheduled and booted."""
+    one.vm.action("release", int(vm_id))
 
 
 def _wait_for_vm_running(one: Any, vm_id: str, timeout: int) -> Any:
@@ -227,8 +239,10 @@ def _wait_for_instance_record(
 
 
 def _launch_probe_vm(one: Any, template_id: int, name: str, vnet_id: str, wait_timeout: int) -> str:
-    """Instantiate a probe VM with an extra NIC on the validation virtual network."""
-    vm_id = _instantiate_template(one, template_id, name, _private_nic_template(vnet_id))
+    """Instantiate a probe VM, attach the validation NIC, and wait for it to run."""
+    vm_id = _instantiate_template_on_hold(one, template_id, name)
+    _attach_private_nic(one, vm_id, vnet_id)
+    _release_vm(one, vm_id)
     _wait_for_vm_running(one, vm_id, wait_timeout)
     return vm_id
 
