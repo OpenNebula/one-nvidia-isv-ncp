@@ -587,7 +587,7 @@ tests:
     traffic_bridge_type: "{{env.ONE_NETWORK_TRAFFIC_BRIDGE_TYPE | default('linux')}}"
     vpc_ip_cidr: "{{env.ONE_NETWORK_VPC_IP_CIDR | default('172.20.0.0/24')}}"
     vpc_ip_nic_id: "{{env.ONE_NETWORK_VPC_IP_NIC_ID | default('1')}}"
-    vpc_ip_dns: "{{env.ONE_NETWORK_VPC_IP_DNS | default('1.1.1.1')}}"
+    vpc_ip_dns: "{{env.ONE_NETWORK_VPC_IP_DNS | default('8.8.8.8')}}"
     vpc_ip_search_domain: "{{env.ONE_NETWORK_VPC_IP_SEARCH_DOMAIN | default('opennebula.io')}}"
     vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
     dhcp_ip_private_nic_id: "{{env.ONE_NETWORK_DHCP_IP_PRIVATE_NIC_ID | default('1')}}"
