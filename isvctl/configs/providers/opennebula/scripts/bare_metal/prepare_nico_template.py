@@ -38,6 +38,67 @@ def env_value(name: str) -> str:
     return value
 
 
+BASE_USER_DATA = r"""#cloud-config
+autoinstall:
+    version: 1
+    identity:
+        hostname: demo-host
+        password: $6$jCfWFbdxh1lK09sY$pxFnrW/yXewYFmgoaywu3WKhdPQg0e8DR8jvedAV.udXM0.i5M6wr4Up2S7ZCN9kNDmg.s7fmrOaXE6nEyzPb/ # Welcome123
+        username: ubuntu
+    ntp:
+        enabled: true
+        ntp_client: chrony
+        servers:
+            - 129.6.15.32
+    keyboard:
+        layout: us
+        toggle: null
+        variant: ""
+    locale: en_US
+    ssh:
+        allow-pw: true
+        authorized-keys: []
+        install-server: true
+    user-data:
+        users:
+            - default
+            - name: admin
+              gecos: Admin
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              groups: sudo
+              lock_passwd: false
+              ssh_authorized_keys: []
+        write_files:
+            - path: /etc/sudoers.d/nopasswd-sudo-group
+              content: |
+                %sudo ALL=(ALL) NOPASSWD:ALL
+              permissions: '0440'
+              owner: root:root
+        runcmd:
+            - sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 99999/' /etc/ssh/sshd_config
+            - 'passwd -u ubuntu || true'
+            - 'passwd -u admin || true'
+"""
+
+def build_user_data(extra_public_key: str = "") -> str:
+    """Return base cloud-config, appending the caller public key if present."""
+    if not extra_public_key:
+        return BASE_USER_DATA
+
+    ssh_marker = "        authorized-keys: []"
+    admin_marker = "              ssh_authorized_keys: []"
+
+    return BASE_USER_DATA.replace(
+        ssh_marker,
+        f"        authorized-keys:\n            - {extra_public_key}",
+        1,
+    ).replace(
+        admin_marker,
+        f"              ssh_authorized_keys:\n                - {extra_public_key}",
+        1,
+    )
+
+
 def build_template(args: argparse.Namespace) -> str:
     """Build the NICo VM template body described by the driver documentation."""
     lines = [
@@ -47,6 +108,7 @@ def build_template(args: argparse.Namespace) -> str:
         f"NICO_INSTANCE_TYPE_ID = {quote(args.instance_type_id)}",
         f"NICO_OS_ID = {quote(args.os_id)}",
         f"NICO_SSH_KEY_GROUP_IDS = {quote(args.ssh_key_group_ids)}",
+        f"NICO_USER_DATA = {quote(args.user_data)}",
         f"NICO_VPC_ID = {quote(args.vpc_id)}",
         "NIC = [",
         f"  NICO_VPC_PREFIX_ID = {quote(args.vpc_prefix_id)}",
@@ -66,6 +128,8 @@ def main() -> int:
     args.instance_type_id = env_value("ONE_BM_NICO_INSTANCE_TYPE_ID")
     args.os_id = env_value("ONE_BM_NICO_OS_ID")
     args.ssh_key_group_ids = env_value("ONE_BM_NICO_SSH_KEY_GROUP_IDS")
+    args.ssh_pubkey = os.environ.get("ONE_BM_NICO_SSH_PUBKEY", "")
+    args.user_data = build_user_data(args.ssh_pubkey)
     args.vpc_id = env_value("ONE_BM_NICO_VPC_ID")
     args.vpc_prefix_id = env_value("ONE_BM_NICO_VPC_PREFIX_ID")
     args.sched_requirements = env_value("ONE_BM_NICO_SCHED_REQUIREMENTS")
@@ -88,6 +152,8 @@ def main() -> int:
         result["instance_type_id"] = args.instance_type_id
         result["vpc_id"] = args.vpc_id
         result["vpc_prefix_id"] = args.vpc_prefix_id
+        result["user_data_public_key"] = True
+        result["user_data_extra_public_key"] = bool(args.ssh_pubkey)
         result["success"] = True
 
     except Exception as e:

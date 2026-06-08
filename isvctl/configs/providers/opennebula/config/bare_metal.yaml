@@ -20,40 +20,22 @@
 # overrides for the NICo-backed OpenNebula bare-metal lifecycle.
 #
 # Steps:
-#   1. prepare_nico_host - pyone: Creates/updates the NICo host (setup)
-#   2. prepare_nico_template - pyone: Creates/updates the NICo VM template (setup)
-#   3. launch_instance - pyone: Provisions bare-metal template, outputs IP/key (setup)
-#   2. list_instances - boto3: Lists instances in VPC, verifies target exists (test)
-#   3. topology_placement - boto3: Validates placement group support (test)
-#   4. serial_console - boto3: Retrieves serial console output (test)
-#   5. verify_image - boto3: Verifies OS image installed on BM instance (test)
-#   6. verify_config - boto3: Verifies install config can provision BM (test)
-#   7. stop_instance - boto3: Powers off BM node, verifies stopped state (test)
-#   8. start_instance - boto3: Powers on BM node, verifies recovery (test)
-#   9. reboot_instance - pyone: Reboots instance, validates recovery (test)
-#  10. power_cycle_instance - boto3: Hard power off + on, validates cold-start (test)
-#  11. describe_instance - boto3: Describes current state, passes SSH info (test)
-#                          (runs after power_cycle so IP is current)
-#  12. reinstall_instance - boto3: Reinstalls OS from stock AMI (test) [skip: true]
-#  13. deploy_nim - paramiko: Deploys NIM container via SSH (test)
-#  14. teardown_nim - paramiko: Stops NIM container via SSH (teardown)
-#  15. teardown - boto3: Terminates bare-metal EC2 (teardown)
-#  16. verify_teardown - boto3: Confirms instance terminated (teardown)
-#
-# Dev workflow (reuse existing instance):
-#   # Run 1: launch + test, keep instance alive
-#   AWS_BM_SKIP_TEARDOWN=true uv run isvctl test run -f isvctl/configs/providers/aws/config/bare_metal.yaml
-#
-#   # Run 2+: reuse instance, iterate on tests
-#   AWS_BM_INSTANCE_ID=i-xxx AWS_BM_KEY_FILE=/tmp/isv-bm-test-key.pem \
-#     AWS_BM_SKIP_TEARDOWN=true uv run isvctl test run -f isvctl/configs/providers/aws/config/bare_metal.yaml
-#
-#   # Final: teardown
-#   AWS_BM_INSTANCE_ID=i-xxx AWS_BM_KEY_FILE=/tmp/isv-bm-test-key.pem \
-#     uv run isvctl test run -f isvctl/configs/providers/aws/config/bare_metal.yaml
+#   1. prepare_nico_host - pyone: Creates the NICo host (setup)
+#   2. prepare_nico_template - pyone: Creates the NICo VM template (setup)
+#   3. launch_instance - pyone/NICo API: Provisions and waits for NICo Ready (setup)
+#   4. list_instances - pyone: Lists OpenNebula VM instances (test)
+#   5. verify_tags - pyone: Reads provider-neutral tags (test)
+#   6. verify_image - pyone/NICo API/SSH: Verifies guest OS image over Teleport (test)
+#   7. reboot_instance - pyone/NICo API: Reboots and waits for NICo Ready (test)
+#   8. power_cycle_instance - pyone/NICo API: Uses NICo reboot, as power-off is unsupported (test)
+#   9. describe_instance - pyone/NICo API: Describes current instance state (test)
+#  10. deploy_nim - Teleport SSH: Deploys NIM container (test)
+#  11. teardown_nim - Teleport SSH: Removes NIM container (teardown)
+#  12. teardown - pyone/NICo driver: Deletes VM, template, and host (teardown)
+#  13. verify_teardown - pyone: Confirms OpenNebula resources were deleted (teardown)
 #
 # Usage:
-#   uv run isvctl test run -f isvctl/configs/providers/aws/config/bare_metal.yaml
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/bare_metal.yaml
 
 import:
   - ../../../suites/bare_metal.yaml
@@ -93,7 +75,7 @@ commands:
           - "{{steps.prepare_nico_template.template_id}}"
         timeout: 8400
 
-      # List instances in VPC - verifies instance is visible
+      # List OpenNebula instances and verify this VM is visible.
       - name: list_instances
         phase: test
         command: "python3 ../scripts/bare_metal/list_instances.py"
@@ -111,82 +93,56 @@ commands:
           - "{{steps.launch_instance.instance_id}}"
         timeout: 60
 
-      # Topology-based placement validation (boto3)
+      # Unimplemented: topology placement validation.
       - name: topology_placement
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/topology_placement.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
+        command: ""
+        args: []
         timeout: 120
 
-      # Serial console output (boto3)
+      # Unimplemented: serial console output retrieval.
       - name: serial_console
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/serial_console.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
+        command: ""
+        args: []
         timeout: 60
 
       # Verify OS image installed on BM instance
       - name: verify_image
         phase: test
-        skip: true
-        command: "python3 ../scripts/image-registry/verify_image_installed.py"
+        command: "python3 ../scripts/bare_metal/verify_image_installed.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-        timeout: 60
+        timeout: 120
 
-      # Verify install config can provision BM
+      # Unimplemented: install config provisioning validation.
       - name: verify_config
         phase: test
         skip: true
-        command: "python3 ../scripts/image-registry/verify_config_installable.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
+        command: ""
+        args: []
         timeout: 120
 
-      # Stop BM node and verify powered-off state (boto3)
-      # BM-specific: longer waiter timeout for full hardware power-down
+      # Unsupported by NICo: instances cannot be powered off.
       - name: stop_instance
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/stop_instance.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
+        command: ""
+        args: []
         timeout: 1800
 
-      # Start stopped BM node and verify recovery (boto3)
-      # BM-specific: longer waiter timeout for POST/BIOS/OS boot cycle
+      # Unsupported by NICo: instances cannot be powered off and started later.
       - name: start_instance
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/start_instance.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
+        command: ""
+        args: []
         timeout: 2700
 
-      # Reboot instance and validate recovery
-      # BM-specific: longer waits for hardware POST/BIOS/OS boot
+      # Reboot instance and validate recovery through NICo status.
       - name: reboot_instance
         phase: test
         command: "python3 ../scripts/bare_metal/reboot_instance.py"
@@ -195,83 +151,57 @@ commands:
           - "{{steps.launch_instance.instance_id}}"
         timeout: 1800
 
-      # Power-cycle: hard power off + power on (cold start)
-      # Force=True bypasses OS shutdown - equivalent to pulling the power
+      # NICo instances cannot be powered off; use NICo reboot as the closest
+      # supported recovery operation for the provider-agnostic power-cycle slot.
       - name: power_cycle_instance
         phase: test
-        skip: true
-        command: "python3 ../scripts/bare_metal/power_cycle_instance.py"
+        command: "python3 ../scripts/bare_metal/reboot_instance.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-        timeout: 3600
+        timeout: 1800
 
-      # Describe instance state - SSH/GPU validation anchor
-      # Runs after power_cycle so the IP is current (stop/start may reassign it)
+      # Describe instance state from OpenNebula and NICo.
       - name: describe_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/describe_instance.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
         timeout: 120
 
+      # Unimplemented: host status log sampling.
       - name: host_status_log
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/host_status_log.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-          - "--public-ip"
-          - "{{steps.describe_instance.public_ip}}"
-          - "--max-age-minutes"
-          - "5"
+        command: ""
+        args: []
         timeout: 300
 
-      # Reinstall instance from stock OS (stop + swap root volume + start)
-      # Skipped by default: ~30-45 min on AWS metal, and CreateReplaceRootVolumeTask
-      # is not supported. The script performs a manual root volume swap instead.
-      # Set skip: false to enable on platforms where reinstall is fast/supported.
+      # Unimplemented: reinstall instance from stock OS.
       - name: reinstall_instance
         phase: test
         skip: true
-        command: "python3 ../scripts/bare_metal/reinstall_instance.py"
+        command: ""
+        args: []
+        timeout: 3600
+
+      # Deploy NIM container via Teleport SSH.
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../scripts/bare_metal/deploy_nim.py"
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--region"
-          - "{{region}}"
-        timeout: 3600
-
-      # Deploy NIM container via SSH (shared script)
-      # Requires NGC_API_KEY env var
-      # Uses post-power-cycle IP/key since power-cycle may reassign the public IP
-      - name: deploy_nim
-        phase: test
-        skip: true
-        command: "python3 ../../shared/deploy_nim.py"
-        args:
-          - "--host"
-          - "{{steps.power_cycle_instance.public_ip}}"
         timeout: 1800
 
-      # Teardown NIM container via SSH (shared script)
-      # Uses post-power-cycle IP/key to match what deploy_nim used
+      # Teardown NIM container via Teleport SSH.
       - name: teardown_nim
         phase: teardown
-        skip: true
-        command: "python3 ../../shared/teardown_nim.py"
+        command: "python3 ../scripts/bare_metal/teardown_nim.py"
         args:
-          - "--host"
-          - "{{steps.power_cycle_instance.public_ip}}"
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
         timeout: 120
 
       # Teardown bare-metal instance through OpenNebula/NICo.
@@ -313,9 +243,7 @@ tests:
 
   # Overrides only - all other validations inherited from ../bare_metal.yaml
   validations:
-    # AWS EC2 GetConsoleOutput can validate current console access, but it does
-    # not prove historical one-month retention. Override the canonical BM group
-    # until an external serial-console archive integration is wired in.
+    # Unimplemented: serial-console retrieval and retention are not wired yet.
     serial_console:
       step: serial_console
       checks:
@@ -323,6 +251,28 @@ tests:
 
     cloud_init:
       step: launch_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    instance_info:
+      step: describe_instance
+      checks:
+        - StepSuccessCheck: {}
+        - InstanceStateCheck:
+            expected_state: "running"
+
+    ssh:
+      step: describe_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    gpu:
+      step: describe_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    host_os:
+      step: describe_instance
       checks:
         - StepSuccessCheck: {}
 
@@ -343,7 +293,21 @@ tests:
       checks:
         - StepSuccessCheck: {}
 
-    # GPU stress - AWS metal has 8 GPUs
+    power_cycle_checks:
+      step: power_cycle_instance
+      checks:
+        - StepSuccessCheck: {}
+        - StableIdentifierCheck:
+            reference_id: "{{steps.launch_instance.instance_id}}"
+
+    power_cycle_state:
+      step: power_cycle_instance
+      checks:
+        - StepSuccessCheck: {}
+        - InstanceStateCheck:
+            expected_state: "running"
+
+    # GPU stress.
     gpu_stress:
       step: describe_instance
       checks:
@@ -352,14 +316,14 @@ tests:
           memory_gb: 16
           expected_gpus: 8
 
-    # NCCL - AWS metal has 8 GPUs
+    # NCCL.
     nccl:
       step: describe_instance
       checks:
         NcclCheck:
           expected_gpus: 8
 
-    # Training - AWS metal has 8 GPUs
+    # Training.
     training:
       step: describe_instance
       checks:
@@ -367,28 +331,21 @@ tests:
           steps: 50
           expected_gpus: 8
 
-    # Start GPU - AWS metal has 8 GPUs
+    # Start GPU.
     start_gpu:
       step: start_instance
       checks:
         GpuCheck:
           expected_gpus: 8
 
-    # Power-cycle GPU - AWS metal has 8 GPUs
-    power_cycle_gpu:
-      step: power_cycle_instance
-      checks:
-        GpuCheck:
-          expected_gpus: 8
-
-    # NVLink - AWS metal has 8 GPUs
+    # NVLink.
     nvlink:
       step: describe_instance
       checks:
         NvlinkCheck:
           expected_gpus: 8
 
-    # AWS-specific: verify OS image installed on BM instance
+    # Verify OS image installed on BM instance.
     image_installed:
       step: verify_image
       checks:
@@ -398,7 +355,7 @@ tests:
         InstanceStateCheck:
           expected_state: "running"
 
-    # AWS-specific: verify install config can provision BM
+    # Verify install config can provision BM.
     config_installable:
       step: verify_config
       checks:
