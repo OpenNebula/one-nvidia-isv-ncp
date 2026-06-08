@@ -15,6 +15,7 @@
 #   4e. Security group node scoping
 #   4f. Security group subnet scoping
 #   4g. Security group service scoping
+#   4h. Security group port policy
 #   5. Connectivity
 #   6. Traffic validation
 #   7. VPC IP configuration
@@ -298,6 +299,25 @@ commands:
           - "{{auth}}"
         timeout: 900
 
+      # Test 4h: Custom port security policy on one VM NIC.
+      - name: sg_port_security_policy
+        phase: test
+        command: "python3 ../scripts/network/sg_port_security_policy.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--allowed-port"
+          - "{{port_policy_allowed_port}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
       # Test 5: VM connectivity across the shared validation virtual network.
       - name: connectivity_test
         phase: test
@@ -423,8 +443,8 @@ commands:
         output_schema: dhcp_ip
 
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # port policy, SDN logging, BYOIP, stable/floating IP, DNS, peering,
-      # and fabric topology checks.
+      # SDN logging, BYOIP, stable/floating IP, DNS, peering, and fabric
+      # topology checks.
 
       - name: teardown
         phase: teardown
@@ -477,6 +497,7 @@ tests:
     vpc_ip_search_domain: "{{env.ONE_NETWORK_VPC_IP_SEARCH_DOMAIN | default('opennebula.io')}}"
     vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
     dhcp_ip_private_nic_id: "{{env.ONE_NETWORK_DHCP_IP_PRIVATE_NIC_ID | default('1')}}"
+    port_policy_allowed_port: "{{env.ONE_NETWORK_PORT_POLICY_ALLOWED_PORT | default('8443')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
     template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
@@ -500,7 +521,6 @@ tests:
 
   exclude:
     tests:
-      - SgPortSecurityPolicyCheck
       - SdnHardwareFaultLoggingCheck
       - SdnLatencyPerfLoggingCheck
       - SdnFilterAuditTrailCheck
