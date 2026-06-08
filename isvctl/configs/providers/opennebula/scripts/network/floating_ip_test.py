@@ -55,20 +55,9 @@ def _failed(error: str, **extra: Any) -> dict[str, Any]:
     return result
 
 
-def _auth_parts(auth: str) -> tuple[str | None, str | None]:
-    """Split OpenNebula auth into CLI user/password when possible."""
-    if ":" not in auth:
-        return None, None
-    user, password = auth.split(":", 1)
-    return user, password
-
-
 def _onevm_command(args: argparse.Namespace, command: list[str], timeout: int = 60) -> None:
-    """Run a onevm command with explicit endpoint and credentials."""
-    user, password = _auth_parts(args.auth)
-    full_command = ["onevm", *command, "--endpoint", args.xmlrpc_url]
-    if user and password:
-        full_command.extend(["--user", user, "--password", password])
+    """Run a onevm command using the current OpenNebula CLI context."""
+    full_command = ["onevm", *command]
 
     try:
         result = subprocess.run(
@@ -143,6 +132,7 @@ def _attach_alias(args: argparse.Namespace, vm_id: str) -> None:
             "nic-attach",
             str(vm_id),
             "-a",
+            args.alias_parent,
             "-n",
             str(args.floating_network_id),
             "-i",
@@ -314,6 +304,7 @@ def main() -> int:
     parser.add_argument("--auth", required=True, help="OpenNebula auth token")
     parser.add_argument("--floating-ip", default="192.168.150.147", help="Free IP to use as NIC alias")
     parser.add_argument("--floating-network-id", default="0", help="OpenNebula network ID for the alias")
+    parser.add_argument("--alias-parent", default="NIC0", help="Parent NIC name used by onevm nic-attach -a")
     parser.add_argument("--max-switch-seconds", type=int, default=10, help="Validation threshold consumed upstream")
     parser.add_argument("--name-prefix", default="isv-floating-ip", help="Temporary VM name prefix")
     parser.add_argument("--vm-wait-timeout", type=int, default=600, help="Seconds to wait for VMs to run")
