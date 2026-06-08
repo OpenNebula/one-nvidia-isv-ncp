@@ -11,8 +11,10 @@
 #   4a. Security group CRUD
 #   4b. Security blocking
 #   4c. Security policy propagation timing
+#   4d. Security group workload scoping
 #   4e. Security group node scoping
 #   4f. Security group subnet scoping
+#   4g. Security group service scoping
 #   5. Connectivity
 #   6. Traffic validation
 #   7. VPC IP configuration
@@ -214,6 +216,25 @@ commands:
           - "10"
         timeout: 120
 
+      # Test 4d: Security group scoping at workload VM/NIC level.
+      - name: sg_workload_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "workload"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
       # Test 4e: Security group scoping at VM/node NIC level.
       - name: sg_node_scoping
         phase: test
@@ -257,6 +278,25 @@ commands:
           - "--vxlan-mode"
           - "{{vxlan_mode}}"
         timeout: 120
+
+      # Test 4g: Security group scoping at service endpoint VM/NIC level.
+      - name: sg_service_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "service"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
 
       # Test 5: VM connectivity across the shared validation virtual network.
       - name: connectivity_test
@@ -383,8 +423,8 @@ commands:
         output_schema: dhcp_ip
 
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # workload/service SG scoping, port policy, SDN logging, BYOIP,
-      # stable/floating IP, DNS, peering, and fabric topology checks.
+      # port policy, SDN logging, BYOIP, stable/floating IP, DNS, peering,
+      # and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -460,8 +500,6 @@ tests:
 
   exclude:
     tests:
-      - SgWorkloadScopingCheck
-      - SgServiceScopingCheck
       - SgPortSecurityPolicyCheck
       - SdnHardwareFaultLoggingCheck
       - SdnLatencyPerfLoggingCheck

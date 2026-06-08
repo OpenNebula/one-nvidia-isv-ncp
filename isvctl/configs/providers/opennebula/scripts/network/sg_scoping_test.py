@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 
-"""Test OpenNebula security group scoping at node or subnet level."""
+"""Test OpenNebula security group scoping at workload, node, subnet, or service level."""
 
 from __future__ import annotations
 
@@ -392,25 +392,58 @@ def _update_ar_security_groups(
     raise RuntimeError("; ".join(errors))
 
 
-def _test_node_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dict[str, Any]:
-    """Run VM/NIC-level SG scoping checks."""
+def _vm_nic_scope_contract(scope: str) -> tuple[str, str, str, str, str]:
+    """Return result keys and labels for VM/NIC-backed scopes."""
+    contracts = {
+        "workload": (
+            "apply_workload_rule",
+            "workload_allowed",
+            "other_workload_blocked",
+            "workload",
+            "workload",
+        ),
+        "node": (
+            "apply_node_rule",
+            "target_node_allowed",
+            "other_node_blocked",
+            "node",
+            "node",
+        ),
+        "service": (
+            "apply_service_rule",
+            "service_endpoint_allowed",
+            "other_endpoint_blocked",
+            "service endpoint",
+            "service",
+        ),
+    }
+    try:
+        return contracts[scope]
+    except KeyError as e:
+        raise ValueError(f"Unsupported VM/NIC scope {scope!r}") from e
+
+
+def _test_vm_nic_scoping(one: Any, args: argparse.Namespace, suffix: str, scope: str) -> dict[str, Any]:
+    """Run VM/NIC-level SG scoping checks for workload, node, or service targets."""
     tests: dict[str, Any] = {}
     sg_id = None
     vm_ids: list[str] = []
+    apply_key, allowed_key, blocked_key, target_label, name_label = _vm_nic_scope_contract(scope)
+    expected_keys = ("create_sg", apply_key, allowed_key, blocked_key)
 
     try:
         template_id = _parse_int(args.template_id, "--template-id")
-        sg_id = _create_test_sg(one, "node", suffix)
+        sg_id = _create_test_sg(one, scope, suffix)
         tests["create_sg"] = _passed("Security group created", sg_id=sg_id)
 
-        target_vm = _instantiate_vm(one, template_id, f"isv-sg-node-target-{suffix}", args.vm_wait_timeout)
+        target_vm = _instantiate_vm(one, template_id, f"isv-sg-{name_label}-target-{suffix}", args.vm_wait_timeout)
         vm_ids.append(target_vm)
-        other_vm = _instantiate_vm(one, template_id, f"isv-sg-node-other-{suffix}", args.vm_wait_timeout)
+        other_vm = _instantiate_vm(one, template_id, f"isv-sg-{name_label}-other-{suffix}", args.vm_wait_timeout)
         vm_ids.append(other_vm)
 
         _attach_sg_to_vm_nic(one, target_vm, args.nic_id, sg_id)
-        tests["apply_node_rule"] = _passed(
-            "Security group attached to target VM NIC",
+        tests[apply_key] = _passed(
+            f"Security group attached to target {target_label} VM NIC",
             sg_id=sg_id,
             target_vm_id=target_vm,
             other_vm_id=other_vm,
@@ -418,21 +451,33 @@ def _test_node_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dict[
         )
 
         target_has_sg = _wait_for_vm_nic_sg(one, target_vm, args.nic_id, sg_id, True)
-        tests["target_node_allowed"] = (
-            _passed("Target VM NIC has scoped security group", vm_id=target_vm, nic_id=args.nic_id)
+        tests[allowed_key] = (
+            _passed(f"Target {target_label} VM NIC has scoped security group", vm_id=target_vm, nic_id=args.nic_id)
             if target_has_sg
-            else _failed("Security group was not found on target VM NIC", vm_id=target_vm, nic_id=args.nic_id)
+            else _failed(
+                f"Security group was not found on target {target_label} VM NIC",
+                vm_id=target_vm,
+                nic_id=args.nic_id,
+            )
         )
 
         other_has_sg = _vm_nic_has_sg(one, other_vm, args.nic_id, sg_id)
-        tests["other_node_blocked"] = (
-            _passed("Security group is absent from unrelated VM NIC", vm_id=other_vm, nic_id=args.nic_id)
+        tests[blocked_key] = (
+            _passed(
+                f"Security group is absent from unrelated {target_label} VM NIC",
+                vm_id=other_vm,
+                nic_id=args.nic_id,
+            )
             if not other_has_sg
-            else _failed("Security group leaked to unrelated VM NIC", vm_id=other_vm, nic_id=args.nic_id)
+            else _failed(
+                f"Security group leaked to unrelated {target_label} VM NIC",
+                vm_id=other_vm,
+                nic_id=args.nic_id,
+            )
         )
 
     except Exception as e:
-        for key in ("create_sg", "apply_node_rule", "target_node_allowed", "other_node_blocked"):
+        for key in expected_keys:
             tests.setdefault(key, _failed(str(e)))
     finally:
         cleanup_errors = []
@@ -447,7 +492,7 @@ def _test_node_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dict[
             except Exception as e:
                 cleanup_errors.append(f"sg:{sg_id}: {e}")
         tests["cleanup"] = (
-            _passed("Node scoping resources cleaned up")
+            _passed(f"{target_label.capitalize()} scoping resources cleaned up")
             if not cleanup_errors
             else _failed("; ".join(cleanup_errors))
         )
@@ -533,8 +578,12 @@ def _test_subnet_scoping(one: Any, args: argparse.Namespace, suffix: str) -> dic
 
 def _failed_contract(scope: str, error: str) -> dict[str, dict[str, Any]]:
     """Return all required subtests as failed for an early error."""
-    if scope == "node":
+    if scope == "workload":
+        keys = ["create_sg", "apply_workload_rule", "workload_allowed", "other_workload_blocked", "cleanup"]
+    elif scope == "node":
         keys = ["create_sg", "apply_node_rule", "target_node_allowed", "other_node_blocked", "cleanup"]
+    elif scope == "service":
+        keys = ["create_sg", "apply_service_rule", "service_endpoint_allowed", "other_endpoint_blocked", "cleanup"]
     else:
         keys = ["create_sg", "apply_subnet_rule", "subnet_allowed", "other_subnet_blocked", "cleanup"]
     return {key: _failed(error) for key in keys}
@@ -544,11 +593,11 @@ def main() -> int:
     """Run an OpenNebula security group scoping test."""
     parser = argparse.ArgumentParser(description="Test OpenNebula SG scoping levels")
     parser.add_argument("--region", required=True, help="Logical region label")
-    parser.add_argument("--scope", required=True, choices=["node", "subnet"])
+    parser.add_argument("--scope", required=True, choices=["workload", "node", "subnet", "service"])
     parser.add_argument("--xmlrpc-url", required=True, help="OpenNebula XML-RPC endpoint")
     parser.add_argument("--auth", required=True, help="OpenNebula auth token")
-    parser.add_argument("--template-id", default="", help="Template ID for node-scope VM probes")
-    parser.add_argument("--nic-id", type=int, default=0, help="VM NIC ID for node-scope SG attachment")
+    parser.add_argument("--template-id", default="", help="Template ID for VM/NIC-backed scope probes")
+    parser.add_argument("--nic-id", type=int, default=0, help="VM NIC ID for VM/NIC-backed SG attachment")
     parser.add_argument("--vm-wait-timeout", type=int, default=600, help="Seconds to wait for VM probes")
     parser.add_argument("--cidr", default=DEFAULT_CIDR, help="CIDR for subnet-scope virtual network")
     parser.add_argument("--cluster-id", type=int, default=-1)
@@ -570,10 +619,10 @@ def main() -> int:
 
     try:
         one = get_one_server(args.xmlrpc_url, args.auth)
-        if args.scope == "node":
-            result["tests"] = _test_node_scoping(one, args, suffix)
-        else:
+        if args.scope == "subnet":
             result["tests"] = _test_subnet_scoping(one, args, suffix)
+        else:
+            result["tests"] = _test_vm_nic_scoping(one, args, suffix, args.scope)
         result["success"] = all(test.get("passed", False) for test in result["tests"].values())
         result["status"] = "passed" if result["success"] else "failed"
     except Exception as e:
