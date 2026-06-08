@@ -623,6 +623,9 @@ tests:
           auto_assign_ip_mode: instance
         DhcpIpManagementCheck:
           step: dhcp_ip_test
+
+    sdn:
+      checks:
         FloatingIpCheck:
           step: floating_ip_test
           max_switch_seconds: 30
