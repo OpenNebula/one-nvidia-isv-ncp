@@ -3,9 +3,9 @@
 
 # OpenNebula Observability Validation Configuration
 #
-# Uses local/provider log evidence for network flow-log and host syslog checks.
-# BMC SEL and GPU telemetry are wired as explicit failures until real OpenNebula
-# BMC/Redfish probes are implemented.
+# Uses local/provider log evidence for host syslog checks. VPC flow logs, BMC
+# SEL, and GPU telemetry are wired as explicit failures until real OpenNebula
+# provider evidence is implemented.
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/observability.yaml
@@ -30,7 +30,7 @@ commands:
           - "--aspect"
           - "vpc_flow_logs"
           - "--flow-log-path"
-          - "{{observability_log_path}}"
+          - "{{flow_log_path}}"
         timeout: 60
 
       - name: host_syslogs
@@ -75,5 +75,6 @@ tests:
   settings:
     region: "{{env.ONE_REGION | default('opennebula')}}"
     network_id: "{{env.ONE_NETWORK_ID | default('opennebula-virtual-network')}}"
+    flow_log_path: "{{env.ONE_FLOW_LOG_PATH | default('', true)}}"
     observability_log_path: "{{env.ONE_OBSERVABILITY_LOG_PATH | default('/var/log/one/oned.log')}}"
     host_syslog_max_age_minutes: "{{env.ONE_HOST_SYSLOG_MAX_AGE_MINUTES | default('1440')}}"

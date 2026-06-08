@@ -35,18 +35,13 @@ def _load_script(script_name: str) -> ModuleType:
     return module
 
 
-def test_opennebula_vpc_flow_logs_emits_observability_contract(tmp_path: Path) -> None:
-    """OpenNebula flow-log check emits VpcFlowLogsCheck evidence."""
+def test_opennebula_vpc_flow_logs_fail_without_provider_flow_log_evidence() -> None:
+    """OpenNebula VPC flow-log check fails until real flow-log evidence is wired."""
     script = _load_script("log_availability_test.py")
-    flow_log = tmp_path / "oned.log"
-    flow_log.write_text(
-        "Fri Jun  5 10:22:35 2026 [Z0][ReM][D]: Req:3883 UID:1 IP:127.0.0.1 one.vmpool.infoextended invoked\n",
-        encoding="utf-8",
-    )
 
-    result = script.check_vpc_flow_logs(network_id="one-vnet-1", flow_log_path=flow_log)
+    result = script.check_vpc_flow_logs(network_id="one-vnet-1", flow_log_path=None)
 
-    assert result["success"] is True
+    assert result["success"] is False
     assert result["platform"] == "observability"
     assert result["test_name"] == "vpc_flow_logs"
     assert set(result["tests"]) == {
@@ -57,8 +52,11 @@ def test_opennebula_vpc_flow_logs_emits_observability_contract(tmp_path: Path) -
     }
     probes = result["tests"]["traffic_type_all"]["probes"]
     assert probes["network_id"] == "one-vnet-1"
-    assert probes["log_destination"] == str(flow_log)
+    assert probes["log_destination"] == ""
     assert probes["traffic_type"] == "ALL"
+    for subtest in result["tests"].values():
+        assert subtest["passed"] is False
+        assert "Not implemented" in subtest["error"]
 
 
 def test_opennebula_host_syslogs_accepts_oned_log_shape(tmp_path: Path) -> None:

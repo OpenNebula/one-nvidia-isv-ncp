@@ -41,6 +41,9 @@ ASPECT_TESTS: dict[str, list[str]] = {
 }
 
 OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE = "Not implemented - OpenNebula BMC validation is not implemented"
+OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE = (
+    "Not implemented - OpenNebula VPC flow-log validation requires provider network-flow evidence"
+)
 
 SYSLOG_WITH_YEAR = re.compile(r"^(?P<stamp>[A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})")
 SYSLOG_NO_YEAR = re.compile(r"^(?P<stamp>[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2})")
@@ -155,12 +158,12 @@ def _count_log_entries(path: Path, *, max_age_minutes: int, max_bytes: int) -> t
     return entry_count, latest_timestamp
 
 
-def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path, max_bytes: int = 2_000_000) -> dict[str, Any]:
+def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path | None, max_bytes: int = 2_000_000) -> dict[str, Any]:
     """Check OpenNebula network-flow log evidence from a configured log file."""
     result = _base_result("vpc_flow_logs")
     probes = {
         "network_id": network_id,
-        "log_destination": str(flow_log_path),
+        "log_destination": str(flow_log_path) if flow_log_path else "",
         "traffic_type": "ALL",
         "sample_window_seconds": 0,
     }
@@ -170,6 +173,12 @@ def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path, max_bytes: int 
         for name in ASPECT_TESTS["vpc_flow_logs"]:
             result["tests"][name] = _failed(error, probes)
         result["error"] = error
+        return result
+
+    if flow_log_path is None:
+        for name in ASPECT_TESTS["vpc_flow_logs"]:
+            result["tests"][name] = _failed(OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE, probes)
+        result["error"] = OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE
         return result
 
     if not flow_log_path.is_file():
@@ -266,12 +275,13 @@ def check_bmc_gpu_telemetry(*, region: str) -> dict[str, Any]:
 def main() -> int:
     """Run the selected OpenNebula observability probe and emit structured JSON."""
     parser = argparse.ArgumentParser(description="OpenNebula observability log availability test")
-    default_log_path = os.environ.get("ONE_OBSERVABILITY_LOG_PATH", "/var/log/one/oned.log")
+    default_host_log_path = os.environ.get("ONE_OBSERVABILITY_LOG_PATH", "/var/log/one/oned.log")
+    default_flow_log_path = os.environ.get("ONE_FLOW_LOG_PATH", "")
     parser.add_argument("--region", default=os.environ.get("ONE_REGION", "opennebula"))
     parser.add_argument("--network-id", default=os.environ.get("ONE_NETWORK_ID", "opennebula-virtual-network"))
     parser.add_argument("--aspect", required=True, choices=sorted(ASPECT_TESTS))
-    parser.add_argument("--flow-log-path", default=default_log_path)
-    parser.add_argument("--host-log-path", default=default_log_path)
+    parser.add_argument("--flow-log-path", default=default_flow_log_path)
+    parser.add_argument("--host-log-path", default=default_host_log_path)
     parser.add_argument(
         "--max-age-minutes",
         type=int,
@@ -283,7 +293,7 @@ def main() -> int:
     if args.aspect == "vpc_flow_logs":
         result = check_vpc_flow_logs(
             network_id=args.network_id,
-            flow_log_path=Path(args.flow_log_path),
+            flow_log_path=Path(args.flow_log_path) if args.flow_log_path else None,
             max_bytes=args.max_bytes,
         )
     elif args.aspect == "host_syslogs":

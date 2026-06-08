@@ -167,6 +167,7 @@ commands:
           - "--xmlrpc-timeout-seconds"
           - "{{audit_xmlrpc_timeout_seconds}}"
         sensitive_args: ["--auth"]
+        continue_on_failure: true
         timeout: 90
 
       - name: short_lived_credentials_test
@@ -193,7 +194,7 @@ tests:
     region: "{{env.ONE_REGION | default('opennebula')}}"
     xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
     auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
-    audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('', true)}}"
+    audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('/var/log/one/oned.log')}}"
     logrotate_config_path: "{{env.ONE_LOGROTATE_CONFIG_PATH | default('/etc/logrotate.d/opennebula')}}"
     logrotate_main_config_path: "{{env.ONE_LOGROTATE_MAIN_CONFIG_PATH | default('/etc/logrotate.conf')}}"
     audit_poll_seconds: "{{env.ONE_AUDIT_POLL_SECONDS | default('20')}}"
