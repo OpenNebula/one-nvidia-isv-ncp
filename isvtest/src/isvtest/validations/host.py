@@ -1975,15 +1975,21 @@ class ContainerRuntimeCheck(BaseValidation):
 
 
 class CloudInitCheck(BaseValidation):
-    """Validate cloud-init completed and instance metadata service is reachable.
+    """Validate cloud-init or provider contextualization completed.
 
-    Checks two things via SSH:
+    By default, checks two things via SSH:
     - cloud-init status: must be "done" (proves cloud-init ran to completion)
     - metadata service: 169.254.169.254 must be reachable (proves link-local
       metadata works, required for cloud-init and instance identity)
 
+    For providers without EC2-style cloud-init metadata, set
+    ``mode: opennebula_contextualization`` and bind this validation to a step
+    output containing OpenNebula contextualization evidence.
+
     Config:
         host, key_file, user: SSH connection details
+        mode: Optional mode. ``opennebula_contextualization`` validates
+            ``step_output`` instead of probing cloud-init over SSH.
         metadata_url: Metadata endpoint to probe (default: http://169.254.169.254/latest/meta-data/)
         metadata_headers: Dict of extra HTTP headers to send with the metadata
             request (e.g. ``{"Metadata-Flavor": "Google"}`` for GCP).
@@ -1994,6 +2000,10 @@ class CloudInitCheck(BaseValidation):
     labels: ClassVar[tuple[str, ...]] = ("ssh", "vm", "bare_metal")
 
     def run(self) -> None:
+        if self.config.get("mode") == "opennebula_contextualization":
+            self._run_opennebula_contextualization_check()
+            return
+
         try:
             import paramiko  # noqa: F401
         except ImportError:
@@ -2044,3 +2054,59 @@ class CloudInitCheck(BaseValidation):
 
         except Exception as e:
             self.set_failed(f"cloud-init check failed: {e}")
+
+    def _run_opennebula_contextualization_check(self) -> None:
+        """Validate OpenNebula contextualization evidence from step output."""
+        step_output = self.config.get("step_output", {})
+        if not isinstance(step_output, dict) or not step_output:
+            self.set_failed("Missing OpenNebula contextualization step output")
+            return
+
+        step_success = step_output.get("success")
+        completed = step_output.get("contextualization_completed") is True
+        message = str(
+            step_output.get("message")
+            or step_output.get("error")
+            or "OpenNebula contextualization evidence evaluated"
+        )
+        self.report_subtest(
+            "contextualization",
+            completed and step_success is not False,
+            message,
+        )
+
+        if "context_source_found" in step_output:
+            source = step_output.get("context_source") or "context source found"
+            self.report_subtest(
+                "context_source",
+                step_output.get("context_source_found") is True,
+                str(source),
+            )
+
+        if "required_context_keys_present" in step_output:
+            missing = step_output.get("context_keys_missing") or []
+            present = step_output.get("context_keys_present") or []
+            if missing:
+                keys_message = f"missing: {', '.join(str(key) for key in missing)}"
+            elif present:
+                keys_message = f"present: {', '.join(str(key) for key in present)}"
+            else:
+                keys_message = "required context keys present"
+            self.report_subtest(
+                "required_context_keys",
+                step_output.get("required_context_keys_present") is True,
+                keys_message,
+            )
+
+        if "one_context_service_ok" in step_output:
+            self.report_subtest(
+                "one_context_service",
+                step_output.get("one_context_service_ok") is True,
+                str(step_output.get("one_context_service") or "one-context service evidence checked"),
+            )
+
+        failed = get_failed_subtests(self._subtest_results)
+        if failed:
+            self.set_failed(f"OpenNebula contextualization subtests failed: {', '.join(failed)}")
+        else:
+            self.set_passed(message)
