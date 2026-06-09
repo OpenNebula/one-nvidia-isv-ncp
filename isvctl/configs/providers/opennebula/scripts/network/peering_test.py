@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common.network import create_vnet, delete_vnet, get_one_server, quote  # noqa: E402
 from test_connectivity import (  # noqa: E402
     _as_list,
-    _cleanup_probe_vms,
     _get_field,
     _instantiate_template,
     _nic_network_id,
@@ -33,6 +32,8 @@ from test_connectivity import (  # noqa: E402
     ssh_run,
     wait_for_ssh,
 )
+
+VM_DONE_STATE = 6
 
 PEERING_TESTS = (
     "create_vpc_a",
@@ -158,6 +159,68 @@ def _wait_for_vrouter_deleted(
             return True
         time.sleep(interval)
     return False
+
+
+def _terminate_vm(one: Any, vm_id: str | int) -> None:
+    """Terminate a VM if it is not already gone or DONE."""
+    try:
+        vm_info = one.vm.info(int(vm_id))
+    except Exception:
+        return
+
+    if int(_get_field(vm_info, "STATE", -1)) == VM_DONE_STATE:
+        return
+
+    one.vm.action("terminate-hard", int(vm_id))
+
+
+def _wait_for_vm_removed(
+    one: Any,
+    vm_id: str | int,
+    timeout: int = 300,
+    interval: int = 5,
+) -> bool:
+    """Wait until OpenNebula reports a VM as gone or DONE."""
+    deadline = time.time() + timeout
+    last_state = "unknown"
+
+    while time.time() < deadline:
+        try:
+            vm_info = one.vm.info(int(vm_id))
+            state = int(_get_field(vm_info, "STATE", -1))
+            lcm_state = int(_get_field(vm_info, "LCM_STATE", -1))
+            last_state = f"{state}/{lcm_state}"
+            if state == VM_DONE_STATE:
+                return True
+        except Exception:
+            return True
+        time.sleep(interval)
+
+    print(f"  VM {vm_id} not fully removed after cleanup wait; last state {last_state}", file=sys.stderr)
+    return False
+
+
+def _terminate_and_wait_for_vms(one: Any, vm_ids: list[str], description: str) -> list[str]:
+    """Terminate VMs and wait until OpenNebula releases them."""
+    cleanup_errors = []
+
+    for vm_id in reversed(vm_ids):
+        terminate_error = ""
+        try:
+            _terminate_vm(one, vm_id)
+        except Exception as e:
+            terminate_error = str(e)
+
+        try:
+            if not _wait_for_vm_removed(one, vm_id):
+                error = f"{description}:{vm_id}: still exists after terminate"
+                if terminate_error:
+                    error = f"{error}; terminate error: {terminate_error}"
+                cleanup_errors.append(error)
+        except Exception as e:
+            cleanup_errors.append(f"{description}:{vm_id}: wait failed: {e}")
+
+    return cleanup_errors
 
 
 def _instantiate_vrouter(one: Any, vrouter_id: str, template_id: int, name: str) -> None:
@@ -372,6 +435,7 @@ def _cleanup_resources(
     *,
     one: Any | None,
     vm_ids: list[str],
+    vrouter_vm_ids: list[str],
     vrouter_id: str | None,
     network_ids: list[str],
     skip_cleanup: bool,
@@ -383,8 +447,7 @@ def _cleanup_resources(
         return True, []
 
     cleanup_errors = []
-    _cleaned, vm_errors = _cleanup_probe_vms(one, vm_ids, skip_cleanup=False)
-    cleanup_errors.extend(vm_errors)
+    cleanup_errors.extend(_terminate_and_wait_for_vms(one, vm_ids, "vm"))
 
     if vrouter_id:
         try:
@@ -394,13 +457,35 @@ def _cleanup_resources(
         except Exception as e:
             cleanup_errors.append(f"vrouter:{vrouter_id}: {e}")
 
+    cleanup_errors.extend(_terminate_and_wait_for_vms(one, vrouter_vm_ids, "vrouter-vm"))
+
     for network_id in reversed(network_ids):
-        try:
-            delete_vnet(one, network_id)
-        except Exception as e:
-            cleanup_errors.append(f"vnet:{network_id}: {e}")
+        delete_error = _delete_vnet_with_retry(one, network_id)
+        if delete_error:
+            cleanup_errors.append(delete_error)
 
     return True, cleanup_errors
+
+
+def _delete_vnet_with_retry(
+    one: Any,
+    network_id: str,
+    timeout: int = 180,
+    interval: int = 5,
+) -> str | None:
+    """Delete a VNet, retrying while OpenNebula releases VM leases."""
+    deadline = time.time() + timeout
+    last_error = ""
+
+    while True:
+        try:
+            delete_vnet(one, network_id)
+            return None
+        except Exception as e:
+            last_error = str(e)
+            if time.time() >= deadline:
+                return f"vnet:{network_id}: {last_error}"
+            time.sleep(interval)
 
 
 def _create_peer_network(
@@ -445,6 +530,7 @@ def run_peering_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
     gateway_b = result["vpc_b"]["gateway"]
     network_ids: list[str] = []
     vm_ids: list[str] = []
+    vrouter_vm_ids: list[str] = []
     vrouter_id: str | None = None
 
     try:
@@ -607,6 +693,7 @@ def run_peering_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
         cleaned_up, cleanup_errors = _cleanup_resources(
             one=one,
             vm_ids=vm_ids,
+            vrouter_vm_ids=vrouter_vm_ids,
             vrouter_id=vrouter_id,
             network_ids=network_ids,
             skip_cleanup=args.skip_cleanup,
