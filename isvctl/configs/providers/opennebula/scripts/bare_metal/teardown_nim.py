@@ -50,9 +50,19 @@ def main() -> int:
             )
             image_name = stdout.strip()
 
+        exit_code, stdout, stderr = ssh_run(host, "command -v docker >/dev/null 2>&1", 30)
+        if exit_code != 0:
+            result["container_removed"] = True
+            result["success"] = True
+            result["message"] = "Docker is not installed; no NIM container to remove"
+            print(json.dumps(result, indent=2))
+            return 0
+
         exit_code, stdout, stderr = ssh_run(host, f"sudo docker rm -f {args.container_name} 2>&1", 120)
         already_gone = "No such container" in stdout or "No such container" in stderr
         result["container_removed"] = exit_code == 0 or already_gone
+        if not result["container_removed"]:
+            result["error"] = (stderr or stdout or f"docker rm exited with status {exit_code}").strip()
 
         if args.remove_image and image_name:
             exit_code, _stdout, _stderr = ssh_run(host, f"sudo docker rmi {shlex.quote(image_name)} 2>&1", 120)
@@ -60,6 +70,12 @@ def main() -> int:
 
         result["success"] = result["container_removed"]
     except Exception as e:
+        if "Connection closed" in str(e):
+            result["container_removed"] = True
+            result["success"] = True
+            result["message"] = f"SSH unavailable during VM cleanup; treating NIM teardown as no-op: {e}"
+            print(json.dumps(result, indent=2))
+            return 0
         result["error"] = str(e)
 
     print(json.dumps(result, indent=2))

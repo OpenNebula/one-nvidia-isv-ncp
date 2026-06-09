@@ -12,6 +12,7 @@ import shlex
 import ssl
 import subprocess
 import sys
+import time
 from typing import Any
 from urllib import error, parse, request
 
@@ -200,6 +201,31 @@ def ssh_run(host: str, user: str, command: str, timeout: int) -> tuple[int, str,
     return result.returncode, result.stdout, result.stderr
 
 
+def ssh_run_with_retry(
+    host: str,
+    user: str,
+    command: str,
+    timeout: int,
+    wait_timeout: int,
+    interval: int = 15,
+) -> tuple[int, str, str]:
+    """Retry SSH while the freshly provisioned guest finishes booting."""
+    deadline = time.time() + wait_timeout
+    last_result = (1, "", "SSH was not attempted")
+
+    while time.time() < deadline:
+        try:
+            last_result = ssh_run(host, user, command, timeout)
+            if last_result[0] == 0:
+                return last_result
+        except subprocess.TimeoutExpired as e:
+            last_result = (124, e.stdout or "", e.stderr or "")
+
+        time.sleep(interval)
+
+    return last_result
+
+
 def parse_os_release(value: str) -> dict[str, str]:
     """Parse /etc/os-release key/value content."""
     parsed: dict[str, str] = {}
@@ -217,6 +243,7 @@ def main() -> int:
     parser.add_argument("--instance-id", type=int, required=True, help="OpenNebula VM ID")
     parser.add_argument("--api-timeout", type=int, default=60, help="NICo API request timeout in seconds")
     parser.add_argument("--ssh-timeout", type=int, default=60, help="SSH command timeout in seconds")
+    parser.add_argument("--ssh-wait-timeout", type=int, default=60, help="Seconds to wait for SSH readiness")
     args = parser.parse_args()
     ssh_user = "ubuntu"
 
@@ -263,7 +290,13 @@ def main() -> int:
         result["private_ip"] = host
 
         command = "cat /etc/os-release && printf '\\n__UNAME_M__=' && uname -m"
-        exit_code, stdout, stderr = ssh_run(host, ssh_user, command, args.ssh_timeout)
+        exit_code, stdout, stderr = ssh_run_with_retry(
+            host,
+            ssh_user,
+            command,
+            args.ssh_timeout,
+            args.ssh_wait_timeout,
+        )
         result["ssh_exit_code"] = exit_code
         if exit_code != 0:
             raise RuntimeError(f"SSH image verification failed: {stderr.strip() or stdout.strip()}")

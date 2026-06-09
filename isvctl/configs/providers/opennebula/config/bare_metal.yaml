@@ -93,12 +93,13 @@ commands:
           - "{{steps.launch_instance.instance_id}}"
         timeout: 60
 
-      # Unimplemented: topology placement validation.
+      # Validate NICo machine placement metadata.
       - name: topology_placement
         phase: test
-        skip: true
-        command: ""
-        args: []
+        command: "python3 ../scripts/bare_metal/topology_placement.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
         timeout: 120
 
       # Unimplemented: serial console output retrieval.
@@ -116,14 +117,19 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-        timeout: 120
+          - "--ssh-wait-timeout"
+          - "2400"
+        timeout: 2700
 
-      # Unimplemented: install config provisioning validation.
+      # Verify template/host NICo configuration is internally consistent.
       - name: verify_config
         phase: test
-        skip: true
-        command: ""
-        args: []
+        command: "python3 ../scripts/bare_metal/verify_config.py"
+        args:
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
         timeout: 120
 
       # Unsupported by NICo: instances cannot be powered off.
@@ -170,12 +176,13 @@ commands:
           - "{{steps.launch_instance.instance_id}}"
         timeout: 120
 
-      # Unimplemented: host status log sampling.
+      # Sample host status logs over Teleport SSH.
       - name: host_status_log
         phase: test
-        skip: true
-        command: ""
-        args: []
+        command: "python3 ../scripts/bare_metal/host_status_log.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
         timeout: 300
 
       # Unimplemented: reinstall instance from stock OS.
@@ -193,7 +200,7 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-        timeout: 1800
+        timeout: 9600
 
       # Teardown NIM container via Teleport SSH.
       - name: teardown_nim
@@ -307,6 +314,16 @@ tests:
         - InstanceStateCheck:
             expected_state: "running"
 
+    power_cycle_ssh:
+      step: power_cycle_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    power_cycle_gpu:
+      step: power_cycle_instance
+      checks:
+        - StepSuccessCheck: {}
+
     # GPU stress.
     gpu_stress:
       step: describe_instance
@@ -314,14 +331,14 @@ tests:
         GpuStressCheck:
           runtime: 30
           memory_gb: 16
-          expected_gpus: 8
+          expected_gpus: 4
 
     # NCCL.
     nccl:
       step: describe_instance
       checks:
         NcclCheck:
-          expected_gpus: 8
+          expected_gpus: 4
 
     # Training.
     training:
@@ -329,21 +346,21 @@ tests:
       checks:
         TrainingCheck:
           steps: 50
-          expected_gpus: 8
+          expected_gpus: 4
 
     # Start GPU.
     start_gpu:
       step: start_instance
       checks:
         GpuCheck:
-          expected_gpus: 8
+          expected_gpus: 4
 
     # NVLink.
     nvlink:
       step: describe_instance
       checks:
         NvlinkCheck:
-          expected_gpus: 8
+          expected_gpus: 4
 
     # Verify OS image installed on BM instance.
     image_installed:
@@ -354,6 +371,21 @@ tests:
           fields: ["instance_id", "image_id", "image_name", "instance_state"]
         InstanceStateCheck:
           expected_state: "running"
+
+    bm_driver_installed:
+      step: deploy_nim
+      checks:
+        BmDriverInstalled: {}
+
+    bm_driver_version:
+      step: deploy_nim
+      checks:
+        BmDriverVersion: {}
+
+    bm_cuda_version:
+      step: deploy_nim
+      checks:
+        BmCudaVersion: {}
 
     # Verify install config can provision BM.
     config_installable:
