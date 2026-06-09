@@ -342,6 +342,7 @@ def build_vnet_template(
     description: str,
     ar_ip: str | None = None,
     ar_size: int | None = None,
+    gateway: str | None = None,
     guest_mtu: str | None = None,
     ip_link_conf: str | None = None,
     filter_ip_spoofing: str | None = None,
@@ -363,6 +364,8 @@ def build_vnet_template(
     ]
     if bridge_type:
         lines.append(f"BRIDGE_TYPE = {quote(bridge_type)}")
+    if gateway:
+        lines.append(f"GATEWAY = {quote(gateway)}")
     if security_groups:
         lines.append(f"SECURITY_GROUPS = {quote(security_groups)}")
     if guest_mtu:
@@ -408,6 +411,7 @@ def create_vnet(
     zone: str,
     ar_ip: str | None = None,
     ar_size: int | None = None,
+    gateway: str | None = None,
     guest_mtu: str | None = None,
     ip_link_conf: str | None = None,
     filter_ip_spoofing: str | None = None,
@@ -427,6 +431,7 @@ def create_vnet(
         description="Created by isvctl network validation",
         ar_ip=ar_ip,
         ar_size=ar_size,
+        gateway=gateway,
         guest_mtu=guest_mtu,
         ip_link_conf=ip_link_conf,
         filter_ip_spoofing=filter_ip_spoofing,
@@ -445,4 +450,5 @@ def create_vnet(
         "phydev": phydev,
         "vxlan_mode": vxlan_mode,
         "zone": zone,
+        "gateway": gateway,
     }

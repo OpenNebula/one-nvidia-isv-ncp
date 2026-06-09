@@ -24,6 +24,7 @@
 #   10. Stable private IP
 #   11. Stable egress IP
 #   12. Floating IP alias switch
+#   13. VPC peering through an OpenNebula Virtual Router
 #
 # Other network checks are intentionally excluded until their OpenNebula scripts
 # are implemented.
@@ -537,8 +538,58 @@ commands:
         timeout: 900
         output_schema: floating_ip
 
+      # Test 13: VPC peering through an OpenNebula Virtual Router.
+      - name: peering_test
+        phase: test
+        command: "python3 ../scripts/network/peering_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr-a"
+          - "{{peering_cidr_a}}"
+          - "--cidr-b"
+          - "{{peering_cidr_b}}"
+          - "--gateway-a"
+          - "{{peering_gateway_a}}"
+          - "--gateway-b"
+          - "{{peering_gateway_b}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--vrouter-template-id"
+          - "{{vrouter_template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+          - "--guest-mtu"
+          - "{{network_guest_mtu}}"
+          - "--ip-link-conf"
+          - "{{network_ip_link_conf}}"
+          - "--filter-ip-spoofing"
+          - "{{network_filter_ip_spoofing}}"
+          - "--filter-mac-spoofing"
+          - "{{network_filter_mac_spoofing}}"
+          - "--bridge-type"
+          - "{{network_bridge_type}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+        timeout: 900
+        output_schema: vpc_peering
+
       # Remaining tests are excluded below until their OpenNebula scripts exist:
-      # SDN hardware/audit logging, BYOIP, DNS, peering, and fabric topology checks.
+      # SDN hardware/audit logging, BYOIP, DNS, and fabric topology checks.
 
       - name: teardown
         phase: teardown
@@ -603,9 +654,14 @@ tests:
     floating_ip_address: "{{env.ONE_NETWORK_FLOATING_IP_ADDRESS | default('192.168.150.147')}}"
     floating_ip_network_id: "{{env.ONE_NETWORK_FLOATING_IP_NETWORK_ID | default('0')}}"
     floating_ip_max_switch_seconds: "{{env.ONE_NETWORK_FLOATING_IP_MAX_SWITCH_SECONDS | default('30')}}"
+    peering_cidr_a: "{{env.ONE_NETWORK_PEERING_CIDR_A | default('172.20.1.0/24')}}"
+    peering_cidr_b: "{{env.ONE_NETWORK_PEERING_CIDR_B | default('172.20.2.0/24')}}"
+    peering_gateway_a: "{{env.ONE_NETWORK_PEERING_GATEWAY_A | default('172.20.1.1')}}"
+    peering_gateway_b: "{{env.ONE_NETWORK_PEERING_GATEWAY_B | default('172.20.2.1')}}"
     vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
     vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
     template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
+    vrouter_template_id: "{{env.ONE_NETWORK_VROUTER_TEMPLATE_ID}}"
     key_file: "{{env.ONE_VM_KEY_FILE}}"
     ssh_user: "root"
     ssh_nic_id: "{{env.ONE_NETWORK_SSH_NIC_ID | default('0')}}"
@@ -636,6 +692,5 @@ tests:
       - SdnFilterAuditTrailCheck
       - ByoipCheck
       - LocalizedDnsCheck
-      - VpcPeeringCheck
       - BackendSwitchFabricCheck
       - NvlinkDomainCheck
