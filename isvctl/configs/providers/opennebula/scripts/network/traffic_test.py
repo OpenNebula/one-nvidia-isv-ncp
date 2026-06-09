@@ -300,24 +300,48 @@ def _ping_via_ssh(
     count: int,
     ping_timeout: int,
     ssh_timeout: int,
+    retry_timeout: int,
+    retry_interval: int,
 ) -> dict[str, Any]:
-    """Run a ping from the source VM and validate the expected outcome."""
+    """Run a ping from the source VM and validate the expected outcome with retries."""
     command = f"ping -c {count} -W {ping_timeout} {shlex.quote(target)}"
-    exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
-    ping_succeeded = exit_code == 0
-    details = (stderr or stdout or f"ping exited with {exit_code}").strip()
+    deadline = time.time() + retry_timeout
+    attempt = 0
+    last_details = ""
 
-    if expect_success and ping_succeeded:
-        return _passed(
-            "Ping succeeded",
-            latency_ms=_parse_ping_latency(stdout),
-            target=target,
-        )
-    if not expect_success and not ping_succeeded:
-        return _passed("Ping blocked as expected", target=target)
+    while True:
+        attempt += 1
+        exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
+        ping_succeeded = exit_code == 0
+        last_details = (stderr or stdout or f"ping exited with {exit_code}").strip()
+
+        if expect_success and ping_succeeded:
+            return _passed(
+                "Ping succeeded",
+                latency_ms=_parse_ping_latency(stdout),
+                target=target,
+                attempts=attempt,
+            )
+        if not expect_success and not ping_succeeded:
+            return _passed("Ping blocked as expected", target=target, attempts=attempt)
+
+        if time.time() >= deadline:
+            break
+        time.sleep(retry_interval)
+
     if expect_success:
-        return _failed("Ping failed but was expected to succeed", target=target, details=details)
-    return _failed("Ping succeeded but was expected to be blocked", target=target)
+        return _failed(
+            "Ping failed but was expected to succeed",
+            target=target,
+            attempts=attempt,
+            details=last_details,
+        )
+    return _failed(
+        "Ping succeeded but was expected to be blocked",
+        target=target,
+        attempts=attempt,
+        details=last_details,
+    )
 
 
 def _http_via_ssh(
@@ -327,20 +351,35 @@ def _http_via_ssh(
     key_file: str,
     url: str,
     ssh_timeout: int,
+    retry_timeout: int,
+    retry_interval: int,
 ) -> dict[str, Any]:
-    """Run an HTTPS probe from the source VM."""
+    """Run an HTTPS probe from the source VM with retries."""
     quoted_url = shlex.quote(url)
     command = (
         f"curl -fsS --connect-timeout 5 {quoted_url} >/dev/null "
         f"|| wget -q -T 5 -O /dev/null {quoted_url}"
     )
-    exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
-    if exit_code == 0:
-        return _passed("HTTP probe succeeded", url=url)
+    deadline = time.time() + retry_timeout
+    attempt = 0
+    last_details = ""
+
+    while True:
+        attempt += 1
+        exit_code, stdout, stderr = ssh_run(host, user, key_file, command, timeout=ssh_timeout)
+        if exit_code == 0:
+            return _passed("HTTP probe succeeded", url=url, attempts=attempt)
+
+        last_details = (stderr or stdout or f"command exited with {exit_code}").strip()
+        if time.time() >= deadline:
+            break
+        time.sleep(retry_interval)
+
     return _failed(
         "HTTP probe failed",
         url=url,
-        details=(stderr or stdout or f"command exited with {exit_code}").strip(),
+        attempts=attempt,
+        details=last_details,
     )
 
 
@@ -502,6 +541,8 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
             count=args.ping_count,
             ping_timeout=args.ping_timeout,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.probe_retry_timeout,
+            retry_interval=args.probe_retry_interval,
         )
         result["tests"]["traffic_blocked"] = _ping_via_ssh(
             host=source_public_ip,
@@ -512,6 +553,8 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
             count=args.ping_count,
             ping_timeout=args.ping_timeout,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.probe_retry_timeout,
+            retry_interval=args.probe_retry_interval,
         )
         result["tests"]["internet_icmp"] = _ping_via_ssh(
             host=source_public_ip,
@@ -522,6 +565,8 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
             count=args.ping_count,
             ping_timeout=args.ping_timeout,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.probe_retry_timeout,
+            retry_interval=args.probe_retry_interval,
         )
         result["tests"]["internet_http"] = _http_via_ssh(
             host=source_public_ip,
@@ -529,6 +574,8 @@ def run_traffic_test(args: argparse.Namespace, one: Any | None = None) -> dict[s
             key_file=args.key_file,
             url=args.http_url,
             ssh_timeout=args.ssh_command_timeout,
+            retry_timeout=args.probe_retry_timeout,
+            retry_interval=args.probe_retry_interval,
         )
 
     except Exception as e:
@@ -583,6 +630,8 @@ def main() -> int:
     parser.add_argument("--ssh-command-timeout", type=int, default=30, help="Seconds allowed for each remote probe")
     parser.add_argument("--ping-count", type=int, default=3, help="ICMP echo count")
     parser.add_argument("--ping-timeout", type=int, default=2, help="Seconds to wait for each ping reply")
+    parser.add_argument("--probe-retry-timeout", type=int, default=60, help="Seconds to retry traffic probes")
+    parser.add_argument("--probe-retry-interval", type=int, default=5, help="Seconds between traffic probe attempts")
     parser.add_argument("--http-url", default="https://example.com", help="HTTPS URL for internet HTTP probe")
     parser.add_argument("--skip-cleanup", action="store_true", help="Keep temporary resources for debugging")
     args = parser.parse_args()
