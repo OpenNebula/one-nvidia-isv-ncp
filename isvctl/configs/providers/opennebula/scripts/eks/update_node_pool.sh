@@ -39,6 +39,7 @@ TAINTS_JSON="${TAINTS_JSON:-[]}"
 ACTION="${ACTION:-Updating}"
 CLUSTER_TIMEOUT=900
 CLUSTER_INTERVAL=60
+KUBECTL="kubectl"
 
 if ! command -v jq &> /dev/null; then
     echo "Error: jq not found" >&2
@@ -135,7 +136,7 @@ WAIT_COUNT=0
 NODES=""
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
     # We use '|| true' to prevent grep from failing the script due to 'set -e' / 'pipefail'
-    NODES=$($KUBECTL get nodes --no-headers 2>/dev/null | grep "$POOL_NAME" | awk '{print $1}' || true)
+    NODES=$($KUBECTL get nodes --no-headers -o custom-columns=NAME:.metadata.name | grep "$POOL_NAME" || true)
     NODE_COUNT=$(echo "$NODES" | grep -c . || echo 0)
     if [ "$NODE_COUNT" -ge "$DESIRED_SIZE" ]; then
         echo "Found $NODE_COUNT nodes." >&2
@@ -182,7 +183,7 @@ done
 NODEGROUP_FLAVOUR="small"
 EXPECTED_LABELS_COMPACT=$(echo "${LABELS_JSON}" | jq -c .)
 EXPECTED_TAINTS_COMPACT=$(echo "${TAINTS_JSON}" | jq -c .)
-EXPECTED_INSTANCE_TYPES_COMPACT=$(echo "[\"${NODEGROUP_FLAVOUR}\"]" | jq -c .)
+EXPECTED_INSTANCE_TYPES_COMPACT="[]"
 
 jq -n \
     --arg node_pool_name "${POOL_NAME}" \

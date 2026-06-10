@@ -215,6 +215,38 @@ EOF
 # Install Kubeflow MPI Operator
 kubectl apply --server-side -f "$KUBEFLOW_MPI_URL" >&2
 
+# Install Autoscaler
+helm install --wait cluster-autoscaler autoscaler/cluster-autoscaler \
+  --namespace kube-system \
+  --create-namespace \
+  --set fullnameOverride=cluster-autoscaler \
+  --set cloudProvider=clusterapi \
+  --set autoDiscovery.clusterName="$CLUSTER_NAME" \
+  --set rbac.create=true \
+  --set extraArgs.cloud-provider=clusterapi \
+  --set extraArgs.node-group-auto-discovery="clusterapi:clusterName=$CLUSTER_NAME"
+
+# Patch autoscaler to work with ClusterAPI Resources
+kubectl patch clusterrole cluster-autoscaler \
+  --type='json' \
+  -p='[
+    {
+      "op": "add",
+      "path": "/rules/-",
+      "value": {
+        "apiGroups": ["infrastructure.cluster.x-k8s.io"],
+        "resources": [
+          "onemachinetemplates",
+          "onemachines",
+          "oneclusters"
+        ],
+        "verbs": ["get", "list", "watch"]
+      }
+    }
+  ]'
+
+kubectl -n kube-system rollout restart deploy cluster-autoscaler
+
 # -----------------------------------------------------------------------------
 # Preflight Checks (Wait for GPUs and Runtime)
 # -----------------------------------------------------------------------------
