@@ -44,13 +44,29 @@ commands:
           K8S_CSI_SHARED_FS_SC: "longhorn"
           K8S_CSI_NFS_SC: "longhorn"
 
-      - name: create_test_node_pool
-        phase: setup
+      - name: create_test_gpu_node_pool
+        phase: test
         command: "../scripts/eks/create_node_pool.sh"
         output_schema: node_pool
         timeout: 900
         env:
           ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-gpu-pool"
+          NODE_TYPE: "gpu"
+          LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
+          TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+
+      - name: create_test_node_pool
+        phase: test
+        command: "../scripts/eks/create_node_pool.sh"
+        output_schema: node_pool
+        timeout: 900
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-cpu-pool"
+          NODE_TYPE: "cpu"
+          LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
+          TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
 
       - name: update_test_node_pool
         phase: test
@@ -59,6 +75,7 @@ commands:
         timeout: 900
         env:
           ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-cpu-pool"
           LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
           TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
 

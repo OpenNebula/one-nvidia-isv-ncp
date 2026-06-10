@@ -33,14 +33,15 @@ set -eo pipefail
 CLUSTER_NAME="${ONE_CLUSTER_NAME:-isv-k8s-cluster}"
 POOL_NAME="${POOL_NAME:-isv-test-pool}"
 DESIRED_SIZE="${DESIRED_SIZE:-1}"
-NODEGROUP_FAMILY="${NODE_FAMILY:-general}"
+NODEGROUP_FAMILY="${NODE_TYPE:-general}"
 NODEGROUP_FLAVOUR="small"
-NODE_TYPE="${NODE_TYPE:-cpu}"
+NODE_TYPE="${NODE_TYPE:-gpu}"
 LABELS_JSON="${LABELS_JSON:-"{}"}"
 TAINTS_JSON="${TAINTS_JSON:-[]}"
 ACTION="${ACTION:-Creating}"
 CLUSTER_TIMEOUT=900
 CLUSTER_INTERVAL=60
+KUBECTL="kubectl"
 
 if ! command -v jq &> /dev/null; then
     echo "Error: jq not found" >&2
@@ -136,6 +137,10 @@ wait_for_cluster "$CLUSTER_ID"
 # Node Configuration (Labels & Taints)
 # -----------------------------------------------------------------------------
 # We identify nodes from this pool by a common label.
+GROUP_ID=$(oneks list group | awk -v cn="$POOL_NAME" '$4==cn {print $1}')
+NODE_ID=$(oneks show group "$GROUP_ID" -j | jq -r '.TEMPLATE.GROUP_BODY.vms[0]')
+NODE_NAME=$(onevm show "$NODE_ID" -j | jq -r '.VM.NAME')
+
 LABEL_SELECTOR="oneks.io/nodegroup=${POOL_NAME}"
 
 echo "Waiting for $DESIRED_SIZE nodes to appear in Kubernetes..." >&2
@@ -144,7 +149,7 @@ WAIT_COUNT=0
 NODES=""
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
     # We use '|| true' to prevent grep from failing the script due to 'set -e' / 'pipefail'
-    NODES=$($KUBECTL get nodes -l "$LABEL_SELECTOR" --no-headers -o custom-columns=NAME:.metadata.name || true)
+    NODES=$($KUBECTL get nodes "$NODE_NAME" --no-headers -o custom-columns=STATUS:.status.conditions[-1].type || true)
     NODE_COUNT=$(echo "$NODES" | grep -c . || echo 0)
     if [ "$NODE_COUNT" -ge "$DESIRED_SIZE" ]; then
         echo "Found $NODE_COUNT nodes." >&2
@@ -155,12 +160,12 @@ while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
     WAIT_COUNT=$((WAIT_COUNT + 5))
 done
 
-if [ -z "$NODES" ]; then
+if [ -z "$NODE_NAME" ]; then
     echo "Warning: No nodes for pool $POOL_NAME appeared after $MAX_WAIT seconds." >&2
 fi
 
 # We apply labels and taints to any node that matches the pool name in its name.
-echo "$NODES" | while read -r node; do
+echo "$NODE_NAME" | while read -r node; do
     [ -z "$node" ] && continue
     echo "Configuring node: $node" >&2
     $KUBECTL label node "$node" "$LABEL_SELECTOR" --overwrite >&2
@@ -185,7 +190,10 @@ done
 # -----------------------------------------------------------------------------
 EXPECTED_LABELS_COMPACT=$(echo "${LABELS_JSON}" | jq -c .)
 EXPECTED_TAINTS_COMPACT=$(echo "${TAINTS_JSON}" | jq -c .)
-EXPECTED_INSTANCE_TYPES_COMPACT=$(echo "[\"${NODEGROUP_FLAVOUR}\"]" | jq -c .)
+EXPECTED_INSTANCE_TYPES_COMPACT="[]"
+if [ "$NODE_TYPE" = "cpu" ]; then
+    DESIRED_SIZE=$((DESIRED_SIZE + 1))
+fi
 
 jq -n \
     --arg node_pool_name "${POOL_NAME}" \

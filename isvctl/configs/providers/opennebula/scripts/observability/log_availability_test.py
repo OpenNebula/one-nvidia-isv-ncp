@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +40,9 @@ ASPECT_TESTS: dict[str, list[str]] = {
     ],
 }
 
-OPENNEBULA_NO_CUSTOMER_BMC_MESSAGE = (
-    "OpenNebula tenant validation does not receive customer-accessible BMC SEL logs or Redfish GPU telemetry"
+OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE = "Not implemented - OpenNebula BMC validation is not implemented"
+OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE = (
+    "Not implemented - OpenNebula VPC flow-log validation requires provider network-flow evidence"
 )
 
 SYSLOG_WITH_YEAR = re.compile(r"^(?P<stamp>[A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})")
@@ -65,16 +66,12 @@ def _failed(error: str, probes: dict[str, Any] | None = None) -> dict[str, Any]:
     return result
 
 
-def _provider_hidden(test_name: str, *, region: str) -> dict[str, Any]:
-    """Build a passing provider-hidden result for customer-inaccessible BMC surfaces."""
+def _not_implemented(test_name: str, *, region: str) -> dict[str, Any]:
+    """Build a failing result for unimplemented BMC surfaces."""
     return {
-        "passed": True,
-        "provider_hidden": True,
+        "passed": False,
+        "error": f"{test_name}: {OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE} in region {region}",
         "probes": {"bmc_endpoints_checked": 0},
-        "message": (
-            f"{test_name}: {OPENNEBULA_NO_CUSTOMER_BMC_MESSAGE} in region {region}; "
-            "BMC plane is operator-owned."
-        ),
     }
 
 
@@ -97,6 +94,17 @@ def _recent_log_text(path: Path, max_bytes: int) -> str:
         return f.read().decode("utf-8", errors="replace")
 
 
+def _readability_error(path: Path, label: str) -> str | None:
+    """Return a concise error when a log path is missing or unreadable."""
+    try:
+        if not path.is_file():
+            return f"OpenNebula {label} path is not a readable file: {path}"
+        with path.open("rb"):
+            return None
+    except OSError as e:
+        return f"OpenNebula {label} path is not readable: {e}"
+
+
 def _parse_log_timestamp(line: str, *, now: datetime) -> str:
     """Parse common OpenNebula/syslog timestamps and return an ISO string."""
     if match := ISO_TIMESTAMP.match(line):
@@ -108,12 +116,12 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
         except ValueError:
             return match.group("stamp")
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed.isoformat()
 
     if match := SYSLOG_WITH_YEAR.match(line):
         try:
-            parsed = datetime.strptime(match.group("stamp"), "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(match.group("stamp"), "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
         except ValueError:
             return match.group("stamp")
         return parsed.isoformat()
@@ -121,7 +129,7 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
     if match := SYSLOG_NO_YEAR.match(line):
         try:
             parsed = datetime.strptime(f"{match.group('stamp')} {now.year}", "%b %d %H:%M:%S %Y").replace(
-                tzinfo=timezone.utc
+                tzinfo=UTC
             )
         except ValueError:
             return match.group("stamp")
@@ -133,7 +141,7 @@ def _parse_log_timestamp(line: str, *, now: datetime) -> str:
 def _count_log_entries(path: Path, *, max_age_minutes: int, max_bytes: int) -> tuple[int, str]:
     """Return count and latest timestamp for entries in the sampling window."""
     text = _recent_log_text(path, max_bytes)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(minutes=max_age_minutes)
     entry_count = 0
     latest_timestamp = ""
@@ -148,25 +156,25 @@ def _count_log_entries(path: Path, *, max_age_minutes: int, max_bytes: int) -> t
             except ValueError:
                 parsed = now
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             if parsed < cutoff:
                 continue
             latest_timestamp = timestamp
         else:
             latest_timestamp = path.stat().st_mtime_ns and datetime.fromtimestamp(
-                path.stat().st_mtime, timezone.utc
+                path.stat().st_mtime, UTC
             ).isoformat()
         entry_count += 1
 
     return entry_count, latest_timestamp
 
 
-def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path, max_bytes: int = 2_000_000) -> dict[str, Any]:
+def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path | None, max_bytes: int = 2_000_000) -> dict[str, Any]:
     """Check OpenNebula network-flow log evidence from a configured log file."""
     result = _base_result("vpc_flow_logs")
     probes = {
         "network_id": network_id,
-        "log_destination": str(flow_log_path),
+        "log_destination": str(flow_log_path) if flow_log_path else "",
         "traffic_type": "ALL",
         "sample_window_seconds": 0,
     }
@@ -178,8 +186,13 @@ def check_vpc_flow_logs(*, network_id: str, flow_log_path: Path, max_bytes: int 
         result["error"] = error
         return result
 
-    if not flow_log_path.is_file():
-        error = f"OpenNebula flow log path is not a readable file: {flow_log_path}"
+    if flow_log_path is None:
+        for name in ASPECT_TESTS["vpc_flow_logs"]:
+            result["tests"][name] = _failed(OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE, probes)
+        result["error"] = OPENNEBULA_FLOW_LOGS_NOT_IMPLEMENTED_MESSAGE
+        return result
+
+    if error := _readability_error(flow_log_path, "flow log"):
         for name in ASPECT_TESTS["vpc_flow_logs"]:
             result["tests"][name] = _failed(error, probes)
         result["error"] = error
@@ -218,8 +231,7 @@ def check_host_syslogs(*, host_log_path: Path, max_age_minutes: int, max_bytes: 
         result["error"] = error
         return result
 
-    if not host_log_path.is_file():
-        error = f"OpenNebula host syslog path is not a readable file: {host_log_path}"
+    if error := _readability_error(host_log_path, "host syslog"):
         for name in ASPECT_TESTS["host_syslogs"]:
             result["tests"][name] = _failed(error, probes)
         result["error"] = error
@@ -254,30 +266,31 @@ def check_host_syslogs(*, host_log_path: Path, max_age_minutes: int, max_bytes: 
 
 
 def check_bmc_sel_logs(*, region: str) -> dict[str, Any]:
-    """Emit OpenNebula provider-hidden evidence for customer-inaccessible BMC SEL logs."""
+    """Emit explicit failure for unimplemented OpenNebula BMC SEL logs."""
     result = _base_result("bmc_sel_logs")
-    result["success"] = True
-    result["tests"] = {name: _provider_hidden(name, region=region) for name in ASPECT_TESTS["bmc_sel_logs"]}
+    result["error"] = OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE
+    result["tests"] = {name: _not_implemented(name, region=region) for name in ASPECT_TESTS["bmc_sel_logs"]}
     return result
 
 
 def check_bmc_gpu_telemetry(*, region: str) -> dict[str, Any]:
-    """Emit OpenNebula provider-hidden evidence for customer-inaccessible BMC GPU telemetry."""
+    """Emit explicit failure for unimplemented OpenNebula BMC GPU telemetry."""
     result = _base_result("bmc_gpu_telemetry")
-    result["success"] = True
-    result["tests"] = {name: _provider_hidden(name, region=region) for name in ASPECT_TESTS["bmc_gpu_telemetry"]}
+    result["error"] = OPENNEBULA_BMC_NOT_IMPLEMENTED_MESSAGE
+    result["tests"] = {name: _not_implemented(name, region=region) for name in ASPECT_TESTS["bmc_gpu_telemetry"]}
     return result
 
 
 def main() -> int:
     """Run the selected OpenNebula observability probe and emit structured JSON."""
     parser = argparse.ArgumentParser(description="OpenNebula observability log availability test")
-    default_log_path = os.environ.get("ONE_OBSERVABILITY_LOG_PATH", "/var/log/one/oned.log")
+    default_host_log_path = os.environ.get("ONE_OBSERVABILITY_LOG_PATH", "/var/log/one/oned.log")
+    default_flow_log_path = os.environ.get("ONE_FLOW_LOG_PATH", "")
     parser.add_argument("--region", default=os.environ.get("ONE_REGION", "opennebula"))
     parser.add_argument("--network-id", default=os.environ.get("ONE_NETWORK_ID", "opennebula-virtual-network"))
     parser.add_argument("--aspect", required=True, choices=sorted(ASPECT_TESTS))
-    parser.add_argument("--flow-log-path", default=default_log_path)
-    parser.add_argument("--host-log-path", default=default_log_path)
+    parser.add_argument("--flow-log-path", default=default_flow_log_path)
+    parser.add_argument("--host-log-path", default=default_host_log_path)
     parser.add_argument(
         "--max-age-minutes",
         type=int,
@@ -289,7 +302,7 @@ def main() -> int:
     if args.aspect == "vpc_flow_logs":
         result = check_vpc_flow_logs(
             network_id=args.network_id,
-            flow_log_path=Path(args.flow_log_path),
+            flow_log_path=Path(args.flow_log_path) if args.flow_log_path else None,
             max_bytes=args.max_bytes,
         )
     elif args.aspect == "host_syslogs":

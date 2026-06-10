@@ -10,19 +10,29 @@ import argparse
 import json
 import os
 import re
+import shlex
 import socket
 import sys
 import time
 import uuid
 import xmlrpc.client as xmlrpc_client
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 TEST_NAME = "audit_logging_test"
 EVENT_NAME = "one.system.version"
 EVENT_SOURCE = "opennebula-xmlrpc"
 MIN_RETENTION_DAYS = 30
+DEFAULT_LOGROTATE_CONFIG_PATH = "/etc/logrotate.d/opennebula"
+DEFAULT_LOGROTATE_MAIN_CONFIG_PATH = "/etc/logrotate.conf"
+
+
+class LogrotatePolicy(NamedTuple):
+    """Logrotate stanza covering one or more log paths."""
+
+    paths: tuple[str, ...]
+    directives: dict[str, list[str]]
 
 
 class MarkerTransport(xmlrpc_client.Transport):
@@ -130,7 +140,7 @@ def _is_opennebula_invocation_line(line: str, event_name: str) -> bool:
 
 def _line_has_recent_time(line: str, probe_started_at: datetime) -> bool:
     """Return True when the entry carries today's date or the probe marker found it."""
-    today = probe_started_at.astimezone(timezone.utc).date().isoformat()
+    today = probe_started_at.astimezone(UTC).date().isoformat()
     return today in line or str(probe_started_at.year) in line
 
 
@@ -199,26 +209,219 @@ def _evaluate_entry_tests(
     }
 
 
-def _evaluate_retention_tests(retention_days: int) -> dict[str, dict[str, Any]]:
-    """Build SEC08-02 retention subtest results."""
-    probes = [{"minimum_retention_days": MIN_RETENTION_DAYS, "configured_retention_days": retention_days}]
-    logging_enabled = retention_days != 0
-    retention_ok = retention_days < 0 or retention_days >= MIN_RETENTION_DAYS
-    retention_message = (
-        "Audit logs are configured for indefinite retention"
-        if retention_days < 0
-        else f"Audit logs are configured for {retention_days} days of retention"
+def _strip_logrotate_comment(line: str) -> str:
+    """Remove shell-style comments from a logrotate line."""
+    return line.split("#", 1)[0].strip()
+
+
+def _read_logrotate_policies(path: Path) -> list[LogrotatePolicy]:
+    """Parse logrotate stanzas from a config file."""
+    policies: list[LogrotatePolicy] = []
+    pending_header = ""
+    current_paths: tuple[str, ...] = ()
+    current_directives: dict[str, list[str]] = {}
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = _strip_logrotate_comment(raw_line)
+        if not line:
+            continue
+
+        if current_paths:
+            if "}" in line:
+                before_close, _sep, _after_close = line.partition("}")
+                directive_line = before_close.strip()
+                if directive_line:
+                    _add_logrotate_directive(current_directives, directive_line)
+                policies.append(LogrotatePolicy(paths=current_paths, directives=current_directives))
+                current_paths = ()
+                current_directives = {}
+                continue
+            _add_logrotate_directive(current_directives, line)
+            continue
+
+        pending_header = f"{pending_header} {line}".strip()
+        if "{" not in pending_header:
+            continue
+
+        header, _sep, remainder = pending_header.partition("{")
+        current_paths = tuple(shlex.split(header))
+        current_directives = {}
+        pending_header = ""
+        remainder = remainder.strip()
+        if remainder:
+            if "}" in remainder:
+                directive_line, _sep, _after_close = remainder.partition("}")
+                if directive_line.strip():
+                    _add_logrotate_directive(current_directives, directive_line.strip())
+                policies.append(LogrotatePolicy(paths=current_paths, directives=current_directives))
+                current_paths = ()
+                current_directives = {}
+            else:
+                _add_logrotate_directive(current_directives, remainder)
+
+    return policies
+
+
+def _add_logrotate_directive(directives: dict[str, list[str]], line: str) -> None:
+    """Add a parsed directive line to a directives map."""
+    parts = shlex.split(line)
+    if parts:
+        directives[parts[0].lower()] = parts[1:]
+
+
+def _read_logrotate_globals(path: Path) -> dict[str, list[str]]:
+    """Parse global directives from logrotate.conf before any stanza body."""
+    directives: dict[str, list[str]] = {}
+    in_stanza = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = _strip_logrotate_comment(raw_line)
+        if not line:
+            continue
+        if "{" in line:
+            in_stanza = True
+            continue
+        if "}" in line:
+            in_stanza = False
+            continue
+        if not in_stanza:
+            _add_logrotate_directive(directives, line)
+    return directives
+
+
+def _main_config_includes(main_config_path: Path, included_config_path: Path) -> bool:
+    """Return True when logrotate.conf includes the OpenNebula logrotate config."""
+    included_config = included_config_path.resolve()
+    included_dir = included_config.parent
+    for raw_line in main_config_path.read_text(encoding="utf-8").splitlines():
+        line = _strip_logrotate_comment(raw_line)
+        if not line:
+            continue
+        parts = shlex.split(line)
+        if len(parts) != 2 or parts[0] != "include":
+            continue
+        include_path = Path(parts[1]).expanduser()
+        try:
+            resolved = include_path.resolve()
+        except OSError:
+            resolved = include_path
+        if resolved == included_config or resolved == included_dir:
+            return True
+    return False
+
+
+def _log_path_matches(pattern: str, audit_log_path: Path) -> bool:
+    """Return True when a logrotate path pattern covers the audit log path."""
+    audit_path = str(audit_log_path)
+    return pattern == audit_path or audit_log_path.match(pattern)
+
+
+def _retention_days_from_logrotate(policy: LogrotatePolicy, globals_: dict[str, list[str]]) -> tuple[int | None, str]:
+    """Return effective retention days and a human-readable policy summary."""
+    directives = {**globals_, **policy.directives}
+    interval_days = 0
+    interval = "unspecified"
+    for name, days in (("daily", 1), ("weekly", 7), ("monthly", 31), ("yearly", 365), ("annually", 365)):
+        if name in directives:
+            interval_days = days
+            interval = name
+            break
+
+    rotate_values = directives.get("rotate", [])
+    if not interval_days or not rotate_values:
+        return None, "missing rotation interval or rotate count"
+
+    try:
+        rotate_count = int(rotate_values[0])
+    except ValueError:
+        return None, f"invalid rotate count {rotate_values[0]!r}"
+    if rotate_count < 1:
+        return 0, f"{interval} rotate {rotate_count}"
+
+    retention_days = interval_days * rotate_count
+    maxage_values = directives.get("maxage", [])
+    summary = f"{interval} rotate {rotate_count}"
+    if maxage_values:
+        try:
+            maxage_days = int(maxage_values[0])
+        except ValueError:
+            return None, f"invalid maxage {maxage_values[0]!r}"
+        retention_days = min(retention_days, maxage_days)
+        summary = f"{summary} maxage {maxage_days}"
+    return retention_days, summary
+
+
+def _evaluate_retention_tests(
+    *,
+    audit_log_path: Path,
+    logrotate_config_path: Path,
+    logrotate_main_config_path: Path,
+) -> dict[str, dict[str, Any]]:
+    """Build SEC08-02 retention results from active logrotate policy."""
+    probes = [
+        {
+            "minimum_retention_days": MIN_RETENTION_DAYS,
+            "audit_log_path": str(audit_log_path),
+            "logrotate_config_path": str(logrotate_config_path),
+            "logrotate_main_config_path": str(logrotate_main_config_path),
+        }
+    ]
+
+    if not logrotate_config_path.is_file():
+        error = f"OpenNebula logrotate config is not readable: {logrotate_config_path}"
+        failed = _failed(error, probes)
+        return {
+            "audit_log_trail_logging_enabled": failed,
+            "audit_log_retention_at_least_30_days": failed,
+        }
+    if not logrotate_main_config_path.is_file():
+        error = f"logrotate main config is not readable: {logrotate_main_config_path}"
+        failed = _failed(error, probes)
+        return {
+            "audit_log_trail_logging_enabled": failed,
+            "audit_log_retention_at_least_30_days": failed,
+        }
+    if not _main_config_includes(logrotate_main_config_path, logrotate_config_path):
+        error = f"{logrotate_main_config_path} does not include {logrotate_config_path}"
+        failed = _failed(error, probes)
+        return {
+            "audit_log_trail_logging_enabled": failed,
+            "audit_log_retention_at_least_30_days": failed,
+        }
+
+    policies = _read_logrotate_policies(logrotate_config_path)
+    matching = [policy for policy in policies if any(_log_path_matches(path, audit_log_path) for path in policy.paths)]
+    if not matching:
+        error = f"No logrotate stanza covers {audit_log_path}"
+        failed = _failed(error, probes)
+        return {
+            "audit_log_trail_logging_enabled": failed,
+            "audit_log_retention_at_least_30_days": failed,
+        }
+
+    globals_ = _read_logrotate_globals(logrotate_main_config_path)
+    policy = matching[-1]
+    retention_days, summary = _retention_days_from_logrotate(policy, globals_)
+    probes[0].update(
+        {
+            "matched_log_paths": list(policy.paths),
+            "logrotate_policy": summary,
+            "computed_retention_days": retention_days,
+        }
     )
+    if retention_days is None:
+        error = f"Cannot compute logrotate retention for {audit_log_path}: {summary}"
+        return {
+            "audit_log_trail_logging_enabled": _passed("OpenNebula audit log is covered by active logrotate policy", probes),
+            "audit_log_retention_at_least_30_days": _failed(error, probes),
+        }
+
+    retention_ok = retention_days >= MIN_RETENTION_DAYS
     return {
-        "audit_log_trail_logging_enabled": (
-            _passed("OpenNebula audit log path and retention policy are configured", probes)
-            if logging_enabled
-            else _failed("OpenNebula audit retention is set to 0 days", probes)
-        ),
+        "audit_log_trail_logging_enabled": _passed("OpenNebula audit log is covered by active logrotate policy", probes),
         "audit_log_retention_at_least_30_days": (
-            _passed(retention_message, probes)
+            _passed(f"OpenNebula audit log retention is {retention_days} days via logrotate", probes)
             if retention_ok
-            else _failed(f"Audit retention {retention_days} days is below {MIN_RETENTION_DAYS} days", probes)
+            else _failed(f"Logrotate retention {retention_days} days is below {MIN_RETENTION_DAYS} days", probes)
         ),
     }
 
@@ -229,7 +432,8 @@ def evaluate_audit_logging(
     xmlrpc_url: str,
     auth: str,
     audit_log_path: Path,
-    retention_days: int,
+    logrotate_config_path: Path,
+    logrotate_main_config_path: Path,
     poll_seconds: int,
     poll_interval_seconds: float,
     xmlrpc_timeout_seconds: float,
@@ -238,7 +442,7 @@ def evaluate_audit_logging(
     """Run the OpenNebula audit logging probe and return provider-neutral JSON."""
     marker = f"isvctl-sec08-{uuid.uuid4().hex}"
     user = _username(auth)
-    probe_started_at = datetime.now(timezone.utc)
+    probe_started_at = datetime.now(UTC)
     tests: dict[str, dict[str, Any]] = {}
 
     if not audit_log_path.is_file():
@@ -251,7 +455,13 @@ def evaluate_audit_logging(
             probe_started_at=probe_started_at,
         )
         tests.update(entry_tests)
-        tests.update(_evaluate_retention_tests(retention_days))
+        tests.update(
+            _evaluate_retention_tests(
+                audit_log_path=audit_log_path,
+                logrotate_config_path=logrotate_config_path,
+                logrotate_main_config_path=logrotate_main_config_path,
+            )
+        )
         return {
             "success": False,
             "platform": "security",
@@ -282,7 +492,13 @@ def evaluate_audit_logging(
             probe_started_at=probe_started_at,
         )
     )
-    tests.update(_evaluate_retention_tests(retention_days))
+    tests.update(
+        _evaluate_retention_tests(
+            audit_log_path=audit_log_path,
+            logrotate_config_path=logrotate_config_path,
+            logrotate_main_config_path=logrotate_main_config_path,
+        )
+    )
 
     return {
         "success": all(test.get("passed") for test in tests.values()),
@@ -290,7 +506,8 @@ def evaluate_audit_logging(
         "test_name": TEST_NAME,
         "region": region,
         "audit_log_path": str(audit_log_path),
-        "audit_log_retention_days": retention_days,
+        "logrotate_config_path": str(logrotate_config_path),
+        "logrotate_main_config_path": str(logrotate_main_config_path),
         "tests": tests,
     }
 
@@ -302,7 +519,14 @@ def main() -> int:
     parser.add_argument("--xmlrpc-url", default=os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2"))
     parser.add_argument("--auth", default=os.environ.get("ONE_AUTH", "oneadmin:opennebula"))
     parser.add_argument("--audit-log-path", default=os.environ.get("ONE_AUDIT_LOG_PATH", ""))
-    parser.add_argument("--audit-retention-days", type=int, default=int(os.environ.get("ONE_AUDIT_RETENTION_DAYS", "0")))
+    parser.add_argument(
+        "--logrotate-config-path",
+        default=os.environ.get("ONE_LOGROTATE_CONFIG_PATH", DEFAULT_LOGROTATE_CONFIG_PATH),
+    )
+    parser.add_argument(
+        "--logrotate-main-config-path",
+        default=os.environ.get("ONE_LOGROTATE_MAIN_CONFIG_PATH", DEFAULT_LOGROTATE_MAIN_CONFIG_PATH),
+    )
     parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("ONE_AUDIT_POLL_SECONDS", "20")))
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
     parser.add_argument(
@@ -319,7 +543,8 @@ def main() -> int:
             xmlrpc_url=args.xmlrpc_url,
             auth=args.auth,
             audit_log_path=Path(args.audit_log_path),
-            retention_days=args.audit_retention_days,
+            logrotate_config_path=Path(args.logrotate_config_path),
+            logrotate_main_config_path=Path(args.logrotate_main_config_path),
             poll_seconds=args.poll_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
             xmlrpc_timeout_seconds=args.xmlrpc_timeout_seconds,
