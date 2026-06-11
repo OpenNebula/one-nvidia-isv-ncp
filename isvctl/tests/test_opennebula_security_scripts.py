@@ -291,9 +291,15 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     """OpenNebula least-privilege check exercises permissions and reports missing source-CIDR scope."""
     module = _load_security_script("least_privilege_test.py")
     state: dict[str, Any] = {
+        "allocated_images": [],
+        "allocated_secgroups": [],
         "deleted_templates": [],
+        "deleted_images": [],
+        "deleted_secgroups": [],
         "deleted_users": [],
-        "chmod_template": None,
+        "chmod_templates": [],
+        "chmod_images": [],
+        "chmod_secgroups": [],
         "sessions": {},
     }
 
@@ -320,13 +326,53 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     class FakeAdminTemplate:
         """Fake admin-side template endpoint."""
 
+        def allocate(self, template: str) -> int:
+            """Allocate a fake admin-owned VM template."""
+            assert "isv-lp-deny-template" in template
+            return 78
+
         def chmod(self, template_id: int, mode: int) -> None:
             """Record template permissions."""
-            state["chmod_template"] = (template_id, mode)
+            state["chmod_templates"].append((template_id, mode))
 
         def delete(self, template_id: int) -> None:
             """Delete fake templates."""
             state["deleted_templates"].append(template_id)
+
+    class FakeAdminImage:
+        """Fake admin-side image endpoint."""
+
+        def allocate(self, template: str, datastore_id: int) -> int:
+            """Allocate a fake admin-owned image."""
+            assert "DATABLOCK" in template
+            assert datastore_id == 1
+            state["allocated_images"].append((template, datastore_id))
+            return 88
+
+        def chmod(self, image_id: int, mode: int) -> None:
+            """Record image permissions."""
+            state["chmod_images"].append((image_id, mode))
+
+        def delete(self, image_id: int) -> None:
+            """Delete fake images."""
+            state["deleted_images"].append(image_id)
+
+    class FakeAdminSecgroup:
+        """Fake admin-side security-group endpoint."""
+
+        def allocate(self, template: str) -> int:
+            """Allocate a fake admin-owned security group."""
+            assert "isv-lp-deny-sg" in template
+            state["allocated_secgroups"].append(template)
+            return 99
+
+        def chmod(self, secgroup_id: int, mode: int) -> None:
+            """Record security-group permissions."""
+            state["chmod_secgroups"].append((secgroup_id, mode))
+
+        def delete(self, secgroup_id: int) -> None:
+            """Delete fake security groups."""
+            state["deleted_secgroups"].append(secgroup_id)
 
     class FakeAllowedTemplate:
         """Fake allowed-user template endpoint."""
@@ -338,8 +384,26 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
 
         def info(self, template_id: int) -> SimpleNamespace:
             """Allow owner reads."""
+            if template_id == 78:
+                raise RuntimeError("not authorized")
             assert template_id == 77
             return SimpleNamespace(ID=77, NAME="isv-lp-template")
+
+    class FakeAllowedImage:
+        """Fake allowed-user image endpoint."""
+
+        def info(self, image_id: int) -> None:
+            """Deny reads of an admin-owned image."""
+            assert image_id == 88
+            raise RuntimeError("not authorized")
+
+    class FakeAllowedSecgroup:
+        """Fake allowed-user security-group endpoint."""
+
+        def info(self, secgroup_id: int) -> None:
+            """Deny reads of an admin-owned security group."""
+            assert secgroup_id == 99
+            raise RuntimeError("not authorized")
 
     class FakeDeniedTemplate:
         """Fake denied-user template endpoint."""
@@ -349,8 +413,17 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
             assert template_id == 77
             raise RuntimeError("not authorized")
 
-    admin_one = SimpleNamespace(user=FakeAdminUser(), template=FakeAdminTemplate())
-    allowed_one = SimpleNamespace(template=FakeAllowedTemplate())
+    admin_one = SimpleNamespace(
+        user=FakeAdminUser(),
+        template=FakeAdminTemplate(),
+        image=FakeAdminImage(),
+        secgroup=FakeAdminSecgroup(),
+    )
+    allowed_one = SimpleNamespace(
+        template=FakeAllowedTemplate(),
+        image=FakeAllowedImage(),
+        secgroup=FakeAllowedSecgroup(),
+    )
     denied_one = SimpleNamespace(template=FakeDeniedTemplate())
 
     def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
@@ -371,6 +444,7 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
         admin_auth="oneadmin:opennebula",
         token_ttl_seconds=-1,
         allowed_source_cidr="not-validated-by-opennebula-xmlrpc",
+        datastore_id=1,
     )
 
     assert payload["success"] is False
@@ -382,9 +456,16 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     assert payload["tests"]["policy_dimensions_user_based"]["passed"] is True
     assert payload["tests"]["policy_dimensions_resource_based"]["passed"] is True
     assert payload["tests"]["policy_dimensions_network_based"]["passed"] is False
+    assert payload["tests"]["out_of_scope_compute_denied"]["passed"] is True
+    assert payload["tests"]["out_of_scope_storage_denied"]["passed"] is True
+    assert payload["tests"]["out_of_scope_network_denied"]["passed"] is True
     assert "source-CIDR" in payload["tests"]["policy_dimensions_network_based"]["error"]
-    assert state["chmod_template"] == (77, 600)
-    assert state["deleted_templates"] == [77]
+    assert state["chmod_templates"] == [(77, 600), (78, 600)]
+    assert state["chmod_images"] == [(88, 600)]
+    assert state["chmod_secgroups"] == [(99, 600)]
+    assert state["deleted_secgroups"] == [99]
+    assert state["deleted_images"] == [88]
+    assert state["deleted_templates"] == [78, 77]
     assert state["deleted_users"] == [41, 42]
 
 
@@ -432,7 +513,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
         max_bytes=20_000,
     )
 
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["tests"]["audit_log_entry_found"]["passed"] is True
     assert payload["tests"]["audit_log_event_name_matches"]["passed"] is True
     assert payload["tests"]["audit_log_user_identity_present"]["passed"] is True
@@ -440,7 +521,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
     assert payload["tests"]["audit_log_user_agent_matches"]["passed"] is True
     assert payload["tests"]["audit_log_region_matches"]["passed"] is True
     assert payload["tests"]["audit_log_event_source_matches"]["passed"] is True
-    assert payload["tests"]["audit_log_retention_at_least_30_days"]["passed"] is True
+    assert payload["tests"]["audit_log_retention_at_least_30_days"]["passed"] is False
 
 
 def test_opennebula_audit_logging_fails_without_log_file() -> None:
@@ -487,8 +568,8 @@ def test_opennebula_audit_logging_fails_short_retention(tmp_path: Path) -> None:
     assert tests["audit_log_retention_at_least_30_days"]["passed"] is False
 
 
-def test_opennebula_audit_logging_passes_weekly_rotate_52_retention(tmp_path: Path) -> None:
-    """OpenNebula SEC08 retention accepts an active weekly rotate 52 logrotate policy."""
+def test_opennebula_audit_logging_fails_weekly_rotate_52_retention(tmp_path: Path) -> None:
+    """OpenNebula SEC08 retention does not accept logrotate-only evidence."""
     module = _load_security_script("audit_logging_test.py")
     audit_log = tmp_path / "one_xmlrpc.log"
     logrotate_config, logrotate_main_config = _write_logrotate_policy(
@@ -514,7 +595,7 @@ def test_opennebula_audit_logging_passes_weekly_rotate_52_retention(tmp_path: Pa
     )
 
     assert tests["audit_log_trail_logging_enabled"]["passed"] is True
-    assert tests["audit_log_retention_at_least_30_days"]["passed"] is True
+    assert tests["audit_log_retention_at_least_30_days"]["passed"] is False
     probes = tests["audit_log_retention_at_least_30_days"]["probes"][0]
     assert probes["computed_retention_days"] == 364
 
