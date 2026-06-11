@@ -26,6 +26,10 @@ EVENT_SOURCE = "opennebula-xmlrpc"
 MIN_RETENTION_DAYS = 30
 DEFAULT_LOGROTATE_CONFIG_PATH = "/etc/logrotate.d/opennebula"
 DEFAULT_LOGROTATE_MAIN_CONFIG_PATH = "/etc/logrotate.conf"
+RETENTION_EVIDENCE_ERROR = (
+    "OpenNebula local logrotate policy is not sufficient evidence that audit logs "
+    "are retained for at least 30 days"
+)
 
 
 class LogrotatePolicy(NamedTuple):
@@ -415,14 +419,9 @@ def _evaluate_retention_tests(
             "audit_log_retention_at_least_30_days": _failed(error, probes),
         }
 
-    retention_ok = retention_days >= MIN_RETENTION_DAYS
     return {
         "audit_log_trail_logging_enabled": _passed("OpenNebula audit log is covered by active logrotate policy", probes),
-        "audit_log_retention_at_least_30_days": (
-            _passed(f"OpenNebula audit log retention is {retention_days} days via logrotate", probes)
-            if retention_ok
-            else _failed(f"Logrotate retention {retention_days} days is below {MIN_RETENTION_DAYS} days", probes)
-        ),
+        "audit_log_retention_at_least_30_days": _failed(RETENTION_EVIDENCE_ERROR, probes),
     }
 
 

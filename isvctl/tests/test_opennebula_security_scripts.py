@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from xmlrpc.client import Fault
 
 import pytest
 
@@ -271,18 +272,73 @@ def test_opennebula_security_checks_fail_not_implemented(aspect: str, expected_t
         assert "Not implemented" in subtest["error"]
 
 
-def test_opennebula_service_account_fails_not_implemented() -> None:
-    """OpenNebula service-account check is explicit unsupported evidence."""
+def test_opennebula_service_account_authenticates_technical_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenNebula service-account check uses a non-expiring technical-user token."""
     module = _load_security_script("sa_credential_test.py")
+    state: dict[str, Any] = {"deleted_users": [], "login_calls": [], "sessions": []}
 
-    payload = module.build_result(region="opennebula")
+    class FakeAdminUser:
+        """Fake admin-side user endpoint."""
 
-    assert payload["success"] is False
-    assert payload["authenticated"] is False
-    assert payload["credential_type"] == "opennebula_internal_service_user"
-    assert payload["identity"] == ""
+        def allocate(self, username: str, password: str, _auth_driver: str = "core") -> int:
+            """Allocate a fake technical user."""
+            assert username.startswith("isv-sa-test-")
+            assert password
+            return 51
+
+        def login(self, username: str, token: str, ttl_seconds: int) -> str:
+            """Create a fake non-expiring token."""
+            state["login_calls"].append((username, token, ttl_seconds))
+            assert username.startswith("isv-sa-test-")
+            assert token == ""
+            assert ttl_seconds == -1
+            return f"token-{username}"
+
+        def delete(self, user_id: int) -> None:
+            """Delete fake users."""
+            state["deleted_users"].append(user_id)
+
+    class FakeSystem:
+        """Fake OpenNebula system endpoint."""
+
+        def version(self) -> str:
+            """Return a fake OpenNebula version."""
+            return "6.10.0"
+
+    admin_one = SimpleNamespace(user=FakeAdminUser())
+    user_one = SimpleNamespace(user=FakeAdminUser())
+    service_one = SimpleNamespace(system=FakeSystem())
+
+    def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
+        """Return fake clients by auth session."""
+        state["sessions"].append(auth)
+        if auth == "oneadmin:opennebula":
+            return admin_one
+        if auth.startswith("isv-sa-test-") and ":token-isv-sa-test-" in auth:
+            return service_one
+        if auth.startswith("isv-sa-test-"):
+            return user_one
+        raise AssertionError(f"unexpected auth session: {auth}")
+
+    monkeypatch.setattr(module, "get_one_server", fake_get_one_server)
+
+    payload = module.evaluate_service_account_credential(
+        region="opennebula",
+        xmlrpc_url="http://one.example.internal:2633/RPC2",
+        admin_auth="oneadmin:opennebula",
+    )
+
+    assert payload["success"] is True
+    assert payload["authenticated"] is True
+    assert payload["credential_type"] == "opennebula_auth_token"
+    assert payload["identity"].startswith("opennebula:user/isv-sa-test-")
+    assert payload["identity"].endswith(":51")
     assert payload["expires_at"] is None
-    assert "Not implemented" in payload["error"]
+    assert state["login_calls"]
+    assert state["deleted_users"] == [51]
+    assert len(state["sessions"]) == 3
 
 
 def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scope(
@@ -291,9 +347,15 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     """OpenNebula least-privilege check exercises permissions and reports missing source-CIDR scope."""
     module = _load_security_script("least_privilege_test.py")
     state: dict[str, Any] = {
+        "allocated_images": [],
+        "allocated_secgroups": [],
         "deleted_templates": [],
+        "deleted_images": [],
+        "deleted_secgroups": [],
         "deleted_users": [],
-        "chmod_template": None,
+        "chmod_templates": [],
+        "chmod_images": [],
+        "chmod_secgroups": [],
         "sessions": {},
     }
 
@@ -307,11 +369,8 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
             return user_id
 
         def login(self, username: str, token: str, ttl_seconds: int, egid: int = -1) -> str:
-            """Return a generated OpenNebula login token."""
-            assert token == ""
-            assert ttl_seconds == -1
-            assert egid == -1
-            return f"token-{username}"
+            """Fail if the least-privilege probe uses OpenNebula login-token creation."""
+            raise AssertionError(f"unexpected login-token creation for {username}:{token}:{ttl_seconds}:{egid}")
 
         def delete(self, user_id: int) -> None:
             """Delete fake users."""
@@ -320,13 +379,53 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     class FakeAdminTemplate:
         """Fake admin-side template endpoint."""
 
+        def allocate(self, template: str) -> int:
+            """Allocate a fake admin-owned VM template."""
+            assert "isv-lp-deny-template" in template
+            return 78
+
         def chmod(self, template_id: int, mode: int) -> None:
             """Record template permissions."""
-            state["chmod_template"] = (template_id, mode)
+            state["chmod_templates"].append((template_id, mode))
 
         def delete(self, template_id: int) -> None:
             """Delete fake templates."""
             state["deleted_templates"].append(template_id)
+
+    class FakeAdminImage:
+        """Fake admin-side image endpoint."""
+
+        def allocate(self, template: str, datastore_id: int) -> int:
+            """Allocate a fake admin-owned image."""
+            assert "DATABLOCK" in template
+            assert datastore_id == 1
+            state["allocated_images"].append((template, datastore_id))
+            return 88
+
+        def chmod(self, image_id: int, mode: int) -> None:
+            """Record image permissions."""
+            state["chmod_images"].append((image_id, mode))
+
+        def delete(self, image_id: int) -> None:
+            """Delete fake images."""
+            state["deleted_images"].append(image_id)
+
+    class FakeAdminSecgroup:
+        """Fake admin-side security-group endpoint."""
+
+        def allocate(self, template: str) -> int:
+            """Allocate a fake admin-owned security group."""
+            assert "isv-lp-deny-sg" in template
+            state["allocated_secgroups"].append(template)
+            return 99
+
+        def chmod(self, secgroup_id: int, mode: int) -> None:
+            """Record security-group permissions."""
+            state["chmod_secgroups"].append((secgroup_id, mode))
+
+        def delete(self, secgroup_id: int) -> None:
+            """Delete fake security groups."""
+            state["deleted_secgroups"].append(secgroup_id)
 
     class FakeAllowedTemplate:
         """Fake allowed-user template endpoint."""
@@ -338,8 +437,26 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
 
         def info(self, template_id: int) -> SimpleNamespace:
             """Allow owner reads."""
+            if template_id == 78:
+                raise RuntimeError("not authorized")
             assert template_id == 77
             return SimpleNamespace(ID=77, NAME="isv-lp-template")
+
+    class FakeAllowedImage:
+        """Fake allowed-user image endpoint."""
+
+        def info(self, image_id: int) -> None:
+            """Deny reads of an admin-owned image."""
+            assert image_id == 88
+            raise RuntimeError("not authorized")
+
+    class FakeAllowedSecgroup:
+        """Fake allowed-user security-group endpoint."""
+
+        def info(self, secgroup_id: int) -> None:
+            """Deny reads of an admin-owned security group."""
+            assert secgroup_id == 99
+            raise RuntimeError("not authorized")
 
     class FakeDeniedTemplate:
         """Fake denied-user template endpoint."""
@@ -349,8 +466,17 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
             assert template_id == 77
             raise RuntimeError("not authorized")
 
-    admin_one = SimpleNamespace(user=FakeAdminUser(), template=FakeAdminTemplate())
-    allowed_one = SimpleNamespace(template=FakeAllowedTemplate())
+    admin_one = SimpleNamespace(
+        user=FakeAdminUser(),
+        template=FakeAdminTemplate(),
+        image=FakeAdminImage(),
+        secgroup=FakeAdminSecgroup(),
+    )
+    allowed_one = SimpleNamespace(
+        template=FakeAllowedTemplate(),
+        image=FakeAllowedImage(),
+        secgroup=FakeAllowedSecgroup(),
+    )
     denied_one = SimpleNamespace(template=FakeDeniedTemplate())
 
     def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
@@ -371,6 +497,7 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
         admin_auth="oneadmin:opennebula",
         token_ttl_seconds=-1,
         allowed_source_cidr="not-validated-by-opennebula-xmlrpc",
+        datastore_id=1,
     )
 
     assert payload["success"] is False
@@ -382,10 +509,373 @@ def test_opennebula_least_privilege_uses_real_permissions_and_fails_network_scop
     assert payload["tests"]["policy_dimensions_user_based"]["passed"] is True
     assert payload["tests"]["policy_dimensions_resource_based"]["passed"] is True
     assert payload["tests"]["policy_dimensions_network_based"]["passed"] is False
+    assert payload["tests"]["out_of_scope_compute_denied"]["passed"] is True
+    assert payload["tests"]["out_of_scope_storage_denied"]["passed"] is True
+    assert payload["tests"]["out_of_scope_network_denied"]["passed"] is True
     assert "source-CIDR" in payload["tests"]["policy_dimensions_network_based"]["error"]
-    assert state["chmod_template"] == (77, 600)
-    assert state["deleted_templates"] == [77]
+    assert state["chmod_templates"] == [(77, 600), (78, 600)]
+    assert state["chmod_images"] == [(88, 600)]
+    assert state["chmod_secgroups"] == [(99, 600)]
+    assert state["deleted_secgroups"] == [99]
+    assert state["deleted_images"] == [88]
+    assert state["deleted_templates"] == [78, 77]
     assert state["deleted_users"] == [41, 42]
+
+
+def test_opennebula_least_privilege_chmod_uses_full_permission_signature() -> None:
+    """OpenNebula chmod expanded signatures include all owner/group/other bits."""
+    module = _load_security_script("least_privilege_test.py")
+    chmod_calls: dict[str, list[tuple[Any, ...]]] = {"template": [], "image": [], "secgroup": []}
+
+    def fake_chmod(kind: str) -> Any:
+        """Return a chmod method that requires the XML-RPC expanded signature."""
+
+        def chmod(*args: Any) -> None:
+            chmod_calls[kind].append(args)
+            if len(args) != 10:
+                raise Fault(-501, "Not enough parameters")
+
+        return chmod
+
+    one = SimpleNamespace(
+        template=SimpleNamespace(chmod=fake_chmod("template")),
+        image=SimpleNamespace(chmod=fake_chmod("image")),
+        secgroup=SimpleNamespace(chmod=fake_chmod("secgroup")),
+    )
+
+    module._chmod_template_owner_only(one, "77")
+    module._chmod_image_owner_only(one, "88")
+    module._chmod_security_group_owner_only(one, "99")
+
+    assert chmod_calls["template"] == [(77, 1, 1, 0, 0, 0, 0, 0, 0, 0)]
+    assert chmod_calls["image"] == [(88, 1, 1, 0, 0, 0, 0, 0, 0, 0)]
+    assert chmod_calls["secgroup"] == [(99, 1, 1, 0, 0, 0, 0, 0, 0, 0)]
+
+
+def test_opennebula_least_privilege_image_cleanup_retries_locked_image_with_force() -> None:
+    """Locked temporary images are force-deleted during cleanup."""
+    module = _load_security_script("least_privilege_test.py")
+    delete_calls: list[tuple[Any, ...]] = []
+
+    def delete(*args: Any) -> None:
+        delete_calls.append(args)
+        if args == (88,):
+            raise RuntimeError("Image locked, use --force flag to remove the image. Force delete may leave files")
+
+    one = SimpleNamespace(image=SimpleNamespace(delete=delete))
+
+    module._delete_image(one, "88")
+
+    assert delete_calls == [(88,), (88, True)]
+
+
+def test_opennebula_tenant_isolation_uses_real_tenant_denials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenNebula tenant-isolation check passes only after cross-tenant API denials."""
+    module = _load_security_script("tenant_isolation_test.py")
+    state: dict[str, Any] = {
+        "sessions": [],
+        "user_chgrp": [],
+        "vdc_groups": [],
+        "chown": [],
+        "chmod": [],
+        "probes": [],
+        "deleted": [],
+    }
+
+    class FakeAdminUser:
+        """Fake admin-side user endpoint."""
+
+        def allocate(self, username: str, _password: str, _auth_driver: str = "core") -> int:
+            """Allocate fake tenant users."""
+            return 101 if "-a-" in username else 102
+
+        def chgrp(self, user_id: int, group_id: int) -> None:
+            """Assign fake users to fake groups."""
+            state["user_chgrp"].append((user_id, group_id))
+
+        def delete(self, user_id: int) -> None:
+            """Delete fake users."""
+            state["deleted"].append(("user", user_id))
+
+    class FakeAdminGroup:
+        """Fake admin-side group endpoint."""
+
+        def allocate(self, group_name: str) -> int:
+            """Allocate fake tenant groups."""
+            return 201 if "-a-" in group_name else 202
+
+        def delete(self, group_id: int) -> None:
+            """Delete fake groups."""
+            state["deleted"].append(("group", group_id))
+
+    class FakeAdminVdc:
+        """Fake admin-side VDC endpoint."""
+
+        def allocate(self, template: str) -> int:
+            """Allocate fake tenant VDCs."""
+            assert template.startswith('NAME = "isv-ti-')
+            return 301 if "-a-" in template else 302
+
+        def addgroup(self, vdc_id: int, group_id: int) -> None:
+            """Assign groups to VDCs."""
+            state["vdc_groups"].append((vdc_id, group_id))
+
+        def delete(self, vdc_id: int) -> None:
+            """Delete fake VDCs."""
+            state["deleted"].append(("vdc", vdc_id))
+
+    class FakeAdminResource:
+        """Fake admin-side resource endpoint."""
+
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+
+        def allocate(self, template: str, *_args: Any) -> int:
+            """Allocate fake tenant-owned fixture resources as admin."""
+            if self.kind == "template":
+                assert "tenant-isolation" in template
+                return 401 if "-a-" in template else 402
+            if self.kind == "image":
+                if "-a-data-" in template:
+                    return 501
+                if "-a-storage-" in template:
+                    return 502
+                if "-b-data-" in template:
+                    return 503
+                if "-b-storage-" in template:
+                    return 504
+            if self.kind == "secgroup":
+                return 601 if "-a-" in template else 602
+            if self.kind == "vn":
+                assert 'VN_MAD = "dummy"' in template
+                assert "PHYDEV" not in template
+                return 701 if "-a-" in template else 702
+            raise AssertionError(f"unexpected {self.kind} allocation template: {template}")
+
+        def chown(self, resource_id: int, user_id: int, group_id: int) -> None:
+            """Assign fake resources to tenant users and groups."""
+            state["chown"].append((self.kind, resource_id, user_id, group_id))
+
+        def chmod(self, resource_id: int, mode: int) -> None:
+            """Record owner-only permission changes."""
+            state["chmod"].append((self.kind, resource_id, mode))
+
+        def delete(self, resource_id: int, *_args: Any) -> None:
+            """Delete fake resources."""
+            state["deleted"].append((self.kind, resource_id))
+
+    class FakeTenantTemplate:
+        """Fake tenant template endpoint."""
+
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def allocate(self, template: str) -> int:
+            """Allocate tenant-owned templates."""
+            assert "tenant-isolation" in template
+            return 401 if self.tenant == "a" else 402
+
+        def info(self, template_id: int) -> None:
+            """Deny tenant A reads of tenant B templates."""
+            state["probes"].append(("template.info", self.tenant, template_id))
+            if self.tenant == "a" and template_id == 402:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected template.info {self.tenant=} {template_id=}")
+
+        def delete(self, template_id: int) -> None:
+            """Deny tenant A deletes of tenant B templates."""
+            state["probes"].append(("template.delete", self.tenant, template_id))
+            if self.tenant == "a" and template_id == 402:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected template.delete {self.tenant=} {template_id=}")
+
+    class FakeTenantImage:
+        """Fake tenant image endpoint."""
+
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def allocate(self, template: str, datastore_id: int) -> int:
+            """Allocate tenant-owned data/storage images."""
+            assert datastore_id == 1
+            if self.tenant == "a" and "-data-" in template:
+                return 501
+            if self.tenant == "a" and "-storage-" in template:
+                return 502
+            if self.tenant == "b" and "-data-" in template:
+                return 503
+            if self.tenant == "b" and "-storage-" in template:
+                return 504
+            raise AssertionError(f"unexpected image template {template}")
+
+        def info(self, image_id: int) -> None:
+            """Deny tenant A reads of tenant B data images."""
+            state["probes"].append(("image.info", self.tenant, image_id))
+            if self.tenant == "a" and image_id == 503:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected image.info {self.tenant=} {image_id=}")
+
+        def clone(self, image_id: int, _name: str) -> None:
+            """Deny tenant A clones of tenant B storage images."""
+            state["probes"].append(("image.clone", self.tenant, image_id))
+            if self.tenant == "a" and image_id == 504:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected image.clone {self.tenant=} {image_id=}")
+
+        def delete(self, image_id: int, force: bool = False) -> None:
+            """Deny tenant A deletes of tenant B storage images."""
+            state["probes"].append(("image.delete", self.tenant, image_id, force))
+            if self.tenant == "a" and image_id == 504 and force is True:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected image.delete {self.tenant=} {image_id=} {force=}")
+
+    class FakeTenantSecgroup:
+        """Fake tenant security-group endpoint."""
+
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def allocate(self, _template: str) -> int:
+            """Allocate tenant-owned security groups."""
+            return 601 if self.tenant == "a" else 602
+
+        def chmod(self, secgroup_id: int, *_args: Any) -> None:
+            """Deny tenant A permission changes on tenant B security groups."""
+            state["probes"].append(("secgroup.chmod", self.tenant, secgroup_id))
+            if self.tenant == "a" and secgroup_id == 602:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected secgroup.chmod {self.tenant=} {secgroup_id=}")
+
+    class FakeTenantVn:
+        """Fake tenant virtual-network endpoint."""
+
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def allocate(self, _template: str, _cluster_id: int = -1) -> int:
+            """Allocate tenant-owned virtual networks."""
+            return 701 if self.tenant == "a" else 702
+
+        def chmod(self, vnet_id: int, *_args: Any) -> None:
+            """Deny tenant A permission changes on tenant B virtual networks."""
+            state["probes"].append(("vn.chmod", self.tenant, vnet_id))
+            if self.tenant == "a" and vnet_id == 702:
+                raise RuntimeError("not authorized")
+            raise AssertionError(f"unexpected vn.chmod {self.tenant=} {vnet_id=}")
+
+    admin_one = SimpleNamespace(
+        user=FakeAdminUser(),
+        group=FakeAdminGroup(),
+        vdc=FakeAdminVdc(),
+        template=FakeAdminResource("template"),
+        image=FakeAdminResource("image"),
+        secgroup=FakeAdminResource("secgroup"),
+        vn=FakeAdminResource("vn"),
+    )
+    tenant_a_one = SimpleNamespace(
+        template=FakeTenantTemplate("a"),
+        image=FakeTenantImage("a"),
+        secgroup=FakeTenantSecgroup("a"),
+        vn=FakeTenantVn("a"),
+    )
+    tenant_b_one = SimpleNamespace(
+        template=FakeTenantTemplate("b"),
+        image=FakeTenantImage("b"),
+        secgroup=FakeTenantSecgroup("b"),
+        vn=FakeTenantVn("b"),
+    )
+
+    def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
+        """Return fake clients by auth session."""
+        state["sessions"].append(auth)
+        if auth == "oneadmin:opennebula":
+            return admin_one
+        if "isv-ti-a-" in auth:
+            return tenant_a_one
+        if "isv-ti-b-" in auth:
+            return tenant_b_one
+        raise AssertionError(f"unexpected auth session: {auth}")
+
+    monkeypatch.setattr(module, "get_one_server", fake_get_one_server)
+
+    payload = module.evaluate_tenant_isolation(
+        region="opennebula",
+        xmlrpc_url="http://one.example.internal:2633/RPC2",
+        admin_auth="oneadmin:opennebula",
+        datastore_id=1,
+        cluster_id=-1,
+    )
+
+    assert payload["success"] is True
+    assert payload["tenant_a_id"].startswith("opennebula:user/isv-ti-a-")
+    assert payload["tenant_a_id"].endswith(":101")
+    assert payload["tenant_b_id"].startswith("opennebula:user/isv-ti-b-")
+    assert payload["tenant_b_id"].endswith(":102")
+    assert all(test["passed"] is True for test in payload["tests"].values())
+    assert state["user_chgrp"] == [(101, 201), (102, 202)]
+    assert state["vdc_groups"] == [(301, 201), (302, 202)]
+    assert ("template", 401, 101, 201) in state["chown"]
+    assert ("template", 402, 102, 202) in state["chown"]
+    assert ("image", 503, 102, 202) in state["chown"]
+    assert ("secgroup", 602, 102, 202) in state["chown"]
+    assert ("vn", 702, 102, 202) in state["chown"]
+    assert ("template.info", "a", 402) in state["probes"]
+    assert ("image.info", "a", 503) in state["probes"]
+    assert ("image.clone", "a", 504) in state["probes"]
+    assert ("image.delete", "a", 504, True) in state["probes"]
+    assert ("secgroup.chmod", "a", 602) in state["probes"]
+    assert ("vn.chmod", "a", 702) in state["probes"]
+
+
+def test_opennebula_tenant_isolation_reports_real_user_ids_on_setup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant-isolation setup failures still report allocated tenant identities."""
+    module = _load_security_script("tenant_isolation_test.py")
+
+    class FakeAdminUser:
+        """Fake admin-side user endpoint."""
+
+        def allocate(self, username: str, _password: str, _auth_driver: str = "core") -> int:
+            """Allocate fake tenant users."""
+            return 101 if "-a-" in username else 102
+
+        def delete(self, _user_id: int) -> None:
+            """Delete fake users."""
+
+    class FakeAdminGroup:
+        """Fake admin-side group endpoint."""
+
+        def allocate(self, _group_name: str) -> int:
+            """Fail tenant setup after users exist."""
+            raise RuntimeError("group allocation denied")
+
+    admin_one = SimpleNamespace(user=FakeAdminUser(), group=FakeAdminGroup())
+
+    def fake_get_one_server(_xmlrpc_url: str, auth: str) -> Any:
+        """Return the fake admin client."""
+        assert auth == "oneadmin:opennebula"
+        return admin_one
+
+    monkeypatch.setattr(module, "get_one_server", fake_get_one_server)
+
+    payload = module.evaluate_tenant_isolation(
+        region="opennebula",
+        xmlrpc_url="http://one.example.internal:2633/RPC2",
+        admin_auth="oneadmin:opennebula",
+        datastore_id=1,
+        cluster_id=-1,
+    )
+
+    assert payload["success"] is False
+    assert payload["tenant_a_id"].startswith("opennebula:user/isv-ti-a-")
+    assert payload["tenant_a_id"].endswith(":101")
+    assert payload["tenant_b_id"].startswith("opennebula:user/isv-ti-b-")
+    assert payload["tenant_b_id"].endswith(":102")
+    assert "allocate group" in payload["error"]
+    assert all("allocate group" in test["error"] for test in payload["tests"].values())
 
 
 def test_opennebula_audit_logging_passes_with_matching_log_entry(
@@ -409,10 +899,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
     def fake_call(_xmlrpc_url: str, _auth: str, marker: str, _timeout_seconds: float) -> str:
         """Write the audit evidence that a real OpenNebula log pipeline would emit."""
         audit_log.write_text(
-            (
-                "Fri Jun  5 10:22:35 2026 [Z0][ReM][D]: "
-                "Req:8368 UID:1 IP:127.0.0.1 one.system.version invoked\n"
-            ),
+            ("Fri Jun  5 10:22:35 2026 [Z0][ReM][D]: Req:8368 UID:1 IP:127.0.0.1 one.system.version invoked\n"),
             encoding="utf-8",
         )
         return module.EVENT_NAME
@@ -432,7 +919,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
         max_bytes=20_000,
     )
 
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["tests"]["audit_log_entry_found"]["passed"] is True
     assert payload["tests"]["audit_log_event_name_matches"]["passed"] is True
     assert payload["tests"]["audit_log_user_identity_present"]["passed"] is True
@@ -440,7 +927,7 @@ def test_opennebula_audit_logging_passes_with_matching_log_entry(
     assert payload["tests"]["audit_log_user_agent_matches"]["passed"] is True
     assert payload["tests"]["audit_log_region_matches"]["passed"] is True
     assert payload["tests"]["audit_log_event_source_matches"]["passed"] is True
-    assert payload["tests"]["audit_log_retention_at_least_30_days"]["passed"] is True
+    assert payload["tests"]["audit_log_retention_at_least_30_days"]["passed"] is False
 
 
 def test_opennebula_audit_logging_fails_without_log_file() -> None:
@@ -471,10 +958,7 @@ def test_opennebula_audit_logging_fails_short_retention(tmp_path: Path) -> None:
     audit_log = tmp_path / "oned.log"
     logrotate_config, logrotate_main_config = _write_logrotate_policy(
         tmp_path,
-        f"{audit_log} {{\n"
-        "    weekly\n"
-        "    rotate 4\n"
-        "}\n",
+        f"{audit_log} {{\n    weekly\n    rotate 4\n}}\n",
     )
 
     tests = module._evaluate_retention_tests(
@@ -487,8 +971,8 @@ def test_opennebula_audit_logging_fails_short_retention(tmp_path: Path) -> None:
     assert tests["audit_log_retention_at_least_30_days"]["passed"] is False
 
 
-def test_opennebula_audit_logging_passes_weekly_rotate_52_retention(tmp_path: Path) -> None:
-    """OpenNebula SEC08 retention accepts an active weekly rotate 52 logrotate policy."""
+def test_opennebula_audit_logging_fails_weekly_rotate_52_retention(tmp_path: Path) -> None:
+    """OpenNebula SEC08 retention does not accept logrotate-only evidence."""
     module = _load_security_script("audit_logging_test.py")
     audit_log = tmp_path / "one_xmlrpc.log"
     logrotate_config, logrotate_main_config = _write_logrotate_policy(
@@ -514,7 +998,7 @@ def test_opennebula_audit_logging_passes_weekly_rotate_52_retention(tmp_path: Pa
     )
 
     assert tests["audit_log_trail_logging_enabled"]["passed"] is True
-    assert tests["audit_log_retention_at_least_30_days"]["passed"] is True
+    assert tests["audit_log_retention_at_least_30_days"]["passed"] is False
     probes = tests["audit_log_retention_at_least_30_days"]["probes"][0]
     assert probes["computed_retention_days"] == 364
 

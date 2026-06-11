@@ -104,10 +104,21 @@ commands:
 
       - name: tenant_isolation_test
         phase: test
-        command: "python3 ../scripts/security/security_not_implemented_test.py"
-        args: ["--region", "{{region}}", "--aspect", "tenant_isolation_test"]
+        command: "python3 ../scripts/security/tenant_isolation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
+          - "--cluster-id"
+          - "{{cluster_id}}"
+        sensitive_args: ["--auth"]
         continue_on_failure: true
-        timeout: 60
+        timeout: 120
 
       - name: least_privilege_test
         phase: test
@@ -123,16 +134,11 @@ commands:
           - "{{service_account_token_ttl_seconds}}"
           - "--allowed-source-cidr"
           - "{{least_privilege_allowed_source_cidr}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
         sensitive_args: ["--auth"]
         continue_on_failure: true
         timeout: 90
-
-      - name: minimal_role_enforcement_test
-        phase: test
-        command: "python3 ../scripts/security/security_not_implemented_test.py"
-        args: ["--region", "{{region}}", "--aspect", "minimal_role_enforcement_test"]
-        continue_on_failure: true
-        timeout: 60
 
       - name: sa_credential_test
         phase: test
@@ -208,6 +214,8 @@ tests:
     region: "{{env.ONE_REGION | default('opennebula')}}"
     xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
     auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
+    datastore_id: "{{env.ONE_IMAGE_DATASTORE_ID | default('1')}}"
+    cluster_id: "{{env.ONE_CLUSTER_ID | default('-1')}}"
     audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('/var/log/one/oned.log')}}"
     logrotate_config_path: "{{env.ONE_LOGROTATE_CONFIG_PATH | default('/etc/logrotate.d/opennebula')}}"
     logrotate_main_config_path: "{{env.ONE_LOGROTATE_MAIN_CONFIG_PATH | default('/etc/logrotate.conf')}}"
@@ -275,7 +283,7 @@ tests:
     minimal_role_enforcement:
       checks:
         MinimalRoleEnforcementCheck:
-          step: minimal_role_enforcement_test
+          step: least_privilege_test
 
     tenant_isolation:
       checks:
