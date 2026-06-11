@@ -17,7 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.control_plane import allocate_user, call_with_compatible_signature, delete_user, get_one_server
+from common.control_plane import allocate_user, delete_user, get_one_server
 
 TEST_NAME = "least_privilege_test"
 NETWORK_SCOPE_MESSAGE = (
@@ -31,6 +31,8 @@ DENIAL_MARKERS = (
     "user couldn't be authenticated",
     "auth",
 )
+NOT_ENOUGH_PARAMETERS = "not enough parameters"
+IMAGE_LOCKED_FORCE_DELETE = "force delete"
 
 
 def _base_result(region: str, allowed_source_cidr: str) -> dict[str, Any]:
@@ -76,21 +78,6 @@ def _base_result(region: str, allowed_source_cidr: str) -> dict[str, Any]:
     }
 
 
-def _session_from_login_token(username: str, token: str) -> str:
-    """Return a valid OpenNebula session string from one.user.login output."""
-    return token if ":" in token else f"{username}:{token}"
-
-
-def _create_login_token(one: Any, username: str, ttl_seconds: int) -> str:
-    """Create an OpenNebula login token for a user."""
-    token = call_with_compatible_signature(
-        one.user.login,
-        (username, "", ttl_seconds, -1),
-        (username, "", ttl_seconds),
-    )
-    return str(token)
-
-
 def _allocate_template(one: Any, name: str) -> str:
     """Allocate a minimal VM template and return its ID."""
     template = f"""
@@ -101,7 +88,12 @@ CONTEXT = [
   ISVTEST = "least-privilege"
 ]
 """
-    return str(int(one.template.allocate(template)))
+    template_id = _call_opennebula_variants(
+        one.template.allocate,
+        (template, False),
+        (template,),
+    )
+    return str(int(template_id))
 
 
 def _allocate_datablock_image(one: Any, name: str, datastore_id: int) -> str:
@@ -114,7 +106,13 @@ PERSISTENT = "NO"
 DEV_PREFIX = "vd"
 DESCRIPTION = "ISV minimal-role storage denial probe"
 """
-    return str(int(one.image.allocate(template, datastore_id)))
+    image_id = _call_opennebula_variants(
+        one.image.allocate,
+        (template, datastore_id, False),
+        (template, datastore_id),
+        (template,),
+    )
+    return str(int(image_id))
 
 
 def _allocate_security_group(one: Any, name: str) -> str:
@@ -127,33 +125,37 @@ RULE = [
   RULE_TYPE = "OUTBOUND"
 ]
 """
-    return str(int(one.secgroup.allocate(template)))
+    secgroup_id = _call_opennebula_variants(
+        one.secgroup.allocate,
+        (template,),
+    )
+    return str(int(secgroup_id))
 
 
 def _chmod_template_owner_only(one: Any, template_id: str) -> None:
-    """Set template permissions to owner-only use/manage/admin when supported."""
-    call_with_compatible_signature(
+    """Set template permissions to owner-only use/manage when supported."""
+    _call_opennebula_variants(
         one.template.chmod,
+        (int(template_id), 1, 1, 0, 0, 0, 0, 0, 0, 0),
         (int(template_id), 600),
-        (int(template_id), 1, 1, 0, 0, 0, 0, 0, 0),
     )
 
 
 def _chmod_image_owner_only(one: Any, image_id: str) -> None:
-    """Set image permissions to owner-only when supported."""
-    call_with_compatible_signature(
+    """Set image permissions to owner-only use/manage when supported."""
+    _call_opennebula_variants(
         one.image.chmod,
+        (int(image_id), 1, 1, 0, 0, 0, 0, 0, 0, 0),
         (int(image_id), 600),
-        (int(image_id), 1, 1, 0, 0, 0, 0, 0, 0),
     )
 
 
 def _chmod_security_group_owner_only(one: Any, secgroup_id: str) -> None:
-    """Set security-group permissions to owner-only when supported."""
-    call_with_compatible_signature(
+    """Set security-group permissions to owner-only use/manage when supported."""
+    _call_opennebula_variants(
         one.secgroup.chmod,
+        (int(secgroup_id), 1, 1, 0, 0, 0, 0, 0, 0, 0),
         (int(secgroup_id), 600),
-        (int(secgroup_id), 1, 1, 0, 0, 0, 0, 0, 0),
     )
 
 
@@ -166,10 +168,50 @@ def _can_read_template(one: Any, template_id: str) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _delete_image(one: Any, image_id: str) -> None:
+    """Delete an image, retrying locked temporary images with force."""
+    try:
+        one.image.delete(int(image_id))
+    except Exception as e:
+        if IMAGE_LOCKED_FORCE_DELETE not in str(e).lower():
+            raise
+        one.image.delete(int(image_id), True)
+
+
 def _denied_by_opennebula(error: str) -> bool:
     """Return whether an OpenNebula error represents permission denial."""
     normalized = error.lower()
     return any(marker in normalized for marker in DENIAL_MARKERS)
+
+
+def _not_enough_parameters(error: Exception) -> bool:
+    """Return whether OpenNebula rejected a pyone signature as too short."""
+    return NOT_ENOUGH_PARAMETERS in str(error).lower()
+
+
+def _call_opennebula_variants(method: Any, *variants: tuple[Any, ...]) -> Any:
+    """Call a pyone method, trying variants rejected by local or XML-RPC arity checks."""
+    last_error: Exception | None = None
+    for args in variants:
+        try:
+            return method(*args)
+        except TypeError as e:
+            last_error = e
+        except Exception as e:
+            last_error = e
+            if not _not_enough_parameters(e):
+                raise
+    if last_error is not None:
+        raise last_error
+    raise TypeError("no call signatures supplied")
+
+
+def _run_step(label: str, call: Any) -> Any:
+    """Run a setup step and annotate OpenNebula errors with the API operation."""
+    try:
+        return call()
+    except Exception as e:
+        raise RuntimeError(f"{label}: {e}") from e
 
 
 def _probe_denied(operation: str, call: Any) -> tuple[bool, str]:
@@ -191,6 +233,18 @@ def _mark_test(tests: dict[str, Any], name: str, passed: bool, message: str, pro
         tests[name]["message"] = message
     else:
         tests[name]["error"] = message
+
+
+def _mark_unrun_minimal_role_tests(tests: dict[str, Any], error: str) -> None:
+    """Replace placeholder minimal-role errors with the real setup failure."""
+    for name in (
+        "out_of_scope_compute_denied",
+        "out_of_scope_storage_denied",
+        "out_of_scope_network_denied",
+    ):
+        result = tests.get(name, {})
+        if result.get("passed") is False and str(result.get("error", "")).endswith("probe did not run"):
+            result["error"] = f"minimal-role denial probe could not run: {error}"
 
 
 def evaluate_least_privilege(
@@ -217,22 +271,52 @@ def evaluate_least_privilege(
     cleanup_errors: list[str] = []
 
     try:
-        allowed_user_id = allocate_user(admin_one, allowed_username, secrets.token_urlsafe(24))
-        denied_user_id = allocate_user(admin_one, denied_username, secrets.token_urlsafe(24))
+        allowed_password = secrets.token_urlsafe(24)
+        denied_password = secrets.token_urlsafe(24)
+        allowed_user_id = _run_step(
+            "allocate allowed user",
+            lambda: allocate_user(admin_one, allowed_username, allowed_password),
+        )
+        denied_user_id = _run_step(
+            "allocate denied user",
+            lambda: allocate_user(admin_one, denied_username, denied_password),
+        )
 
-        allowed_token = _create_login_token(admin_one, allowed_username, token_ttl_seconds)
-        denied_token = _create_login_token(admin_one, denied_username, token_ttl_seconds)
-        allowed_one = get_one_server(xmlrpc_url, _session_from_login_token(allowed_username, allowed_token))
-        denied_one = get_one_server(xmlrpc_url, _session_from_login_token(denied_username, denied_token))
+        allowed_one = _run_step(
+            "open allowed user session",
+            lambda: get_one_server(xmlrpc_url, f"{allowed_username}:{allowed_password}"),
+        )
+        denied_one = _run_step(
+            "open denied user session",
+            lambda: get_one_server(xmlrpc_url, f"{denied_username}:{denied_password}"),
+        )
 
-        template_id = _allocate_template(allowed_one, f"isv-lp-template-{suffix}")
-        _chmod_template_owner_only(admin_one, template_id)
-        out_of_scope_template_id = _allocate_template(admin_one, f"isv-lp-deny-template-{suffix}")
-        _chmod_template_owner_only(admin_one, out_of_scope_template_id)
-        out_of_scope_image_id = _allocate_datablock_image(admin_one, f"isv-lp-deny-image-{suffix}", datastore_id)
-        _chmod_image_owner_only(admin_one, out_of_scope_image_id)
-        out_of_scope_secgroup_id = _allocate_security_group(admin_one, f"isv-lp-deny-sg-{suffix}")
-        _chmod_security_group_owner_only(admin_one, out_of_scope_secgroup_id)
+        template_id = _run_step(
+            "allocate allowed template",
+            lambda: _allocate_template(allowed_one, f"isv-lp-template-{suffix}"),
+        )
+        _run_step("chmod allowed template", lambda: _chmod_template_owner_only(admin_one, template_id))
+        out_of_scope_template_id = _run_step(
+            "allocate out-of-scope template",
+            lambda: _allocate_template(admin_one, f"isv-lp-deny-template-{suffix}"),
+        )
+        _run_step(
+            "chmod out-of-scope template",
+            lambda: _chmod_template_owner_only(admin_one, out_of_scope_template_id),
+        )
+        out_of_scope_image_id = _run_step(
+            "allocate out-of-scope image",
+            lambda: _allocate_datablock_image(admin_one, f"isv-lp-deny-image-{suffix}", datastore_id),
+        )
+        _run_step("chmod out-of-scope image", lambda: _chmod_image_owner_only(admin_one, out_of_scope_image_id))
+        out_of_scope_secgroup_id = _run_step(
+            "allocate out-of-scope security group",
+            lambda: _allocate_security_group(admin_one, f"isv-lp-deny-sg-{suffix}"),
+        )
+        _run_step(
+            "chmod out-of-scope security group",
+            lambda: _chmod_security_group_owner_only(admin_one, out_of_scope_secgroup_id),
+        )
         result["test_identity"] = f"opennebula:user/{allowed_username}:{allowed_user_id}"
         result["allowed_resource"] = f"opennebula:template/{template_id}"
 
@@ -350,7 +434,9 @@ def evaluate_least_privilege(
             result["error"] = "OpenNebula least-privilege validation did not satisfy all required policy dimensions"
         return result
     except Exception as e:
-        result["error"] = str(e)
+        error = str(e)
+        result["error"] = error
+        _mark_unrun_minimal_role_tests(result["tests"], error)
         return result
     finally:
         if out_of_scope_secgroup_id is not None:
@@ -360,7 +446,7 @@ def evaluate_least_privilege(
                 cleanup_errors.append(f"delete security group {out_of_scope_secgroup_id}: {e}")
         if out_of_scope_image_id is not None:
             try:
-                admin_one.image.delete(int(out_of_scope_image_id))
+                _delete_image(admin_one, out_of_scope_image_id)
             except Exception as e:
                 cleanup_errors.append(f"delete image {out_of_scope_image_id}: {e}")
         if out_of_scope_template_id is not None:
