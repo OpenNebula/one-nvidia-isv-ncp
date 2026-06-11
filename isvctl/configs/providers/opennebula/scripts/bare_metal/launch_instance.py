@@ -187,17 +187,12 @@ def map_state(state: int, lcm_state: int) -> str:
 def wait_for_deploy_id(one: Any, vm_id: int, timeout: int) -> tuple[Any, str, dict[str, Any]]:
     """Wait for the NICo deploy ID that can arrive after OpenNebula RUNNING."""
     start_time = time.time()
-    last_status = ""
 
     while time.time() - start_time < timeout:
         vm_info = one.vm.info(vm_id)
         monitoring = get_monitoring(vm_info)
         deploy_id = get_deploy_id(vm_info)
         nico_status = str(monitoring.get("NICO_STATUS", ""))
-
-        if nico_status and nico_status != last_status:
-            print(f"NICo status: {nico_status}", file=sys.stderr)
-            last_status = nico_status
 
         if deploy_id:
             return vm_info, deploy_id, monitoring
@@ -329,7 +324,6 @@ def wait_for_nico_ready(
         status = str(last_instance.get("status") or "")
         if status and (not statuses or statuses[-1] != status):
             statuses.append(status)
-            print(f"NICo status: {status}", file=sys.stderr)
 
         if status == "Ready":
             return last_instance, statuses
@@ -339,6 +333,61 @@ def wait_for_nico_ready(
         time.sleep(interval)
 
     raise RuntimeError(f"Timeout waiting for NICo instance to become Ready; statuses={statuses}")
+
+
+def populate_result_from_vm(
+    result: dict[str, Any],
+    one: Any,
+    vm_info: Any,
+    deploy_id: str,
+    monitoring: dict[str, Any],
+    nico_instance: dict[str, Any],
+    nico_statuses: list[str],
+) -> None:
+    """Populate provider-neutral launch output from an OpenNebula/NICo VM."""
+    template = get_value(vm_info, "TEMPLATE", {})
+    context = get_context(template)
+    user_key = get_user_ssh_public_key(one, vm_info)
+    context_key = str(context.get("SSH_PUBLIC_KEY", "") or "")
+    requested_key_names = public_key_fingerprints(user_key)
+    observed_key_names = public_key_fingerprints(context_key)
+
+    result["nico_instance_id"] = deploy_id
+    result["deploy_id"] = deploy_id
+    public_ip, network_id = get_ip(vm_info)
+    public_ip = instance_ip(nico_instance) or public_ip
+    if public_ip:
+        result["public_ip"] = public_ip
+        result["private_ip"] = public_ip
+    result["nico_status"] = str(nico_instance.get("status") or "")
+    result["nico_statuses"] = nico_statuses
+    result["nico_ready"] = result["nico_status"] == "Ready"
+    if monitoring.get("NICO_STATUS"):
+        result["opennebula_nico_status"] = str(monitoring["NICO_STATUS"])
+    if nico_instance.get("machineId"):
+        result["machine_id"] = str(nico_instance["machineId"])
+    elif monitoring.get("MACHINE_ID"):
+        result["machine_id"] = str(monitoring["MACHINE_ID"])
+    if network_id:
+        result["network_id"] = network_id
+        result["vpc_id"] = network_id
+
+    result["requested_key_name"] = ",".join(requested_key_names)
+    result["key_name"] = ",".join(observed_key_names)
+    result["contextualization_completed"] = bool(context)
+    result["ssh_user"] = "ubuntu"
+    if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+        result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+        result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
+    result["tests"] = {
+        "specified_key": {
+            "passed": bool(requested_key_names) and requested_key_names == observed_key_names,
+            "message": "CONTEXT/SSH_PUBLIC_KEY matches user TEMPLATE/SSH_PUBLIC_KEY"
+            if requested_key_names == observed_key_names
+            else "CONTEXT/SSH_PUBLIC_KEY does not match user TEMPLATE/SSH_PUBLIC_KEY",
+            "probes": ["user_ssh_public_key", "context_ssh_public_key"],
+        }
+    }
 
 
 def main() -> int:
@@ -362,6 +411,7 @@ def main() -> int:
     parser.add_argument("--api-timeout", type=int, default=60, help="NICo API request timeout in seconds")
     parser.add_argument("--interval", type=int, default=5, help="Polling interval in seconds")
     args = parser.parse_args()
+    existing_instance_id = os.environ.get("ONE_BM_EXISTING_INSTANCE_ID", "")
     instance_name = f"{args.name}-{uuid.uuid4().hex[:8]}"
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
@@ -377,12 +427,20 @@ def main() -> int:
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
-        vm_id = one.template.instantiate(args.template_id, instance_name)
-        result["instance_id"] = str(vm_id)
-        one.vm.update(vm_id, build_tag_template(instance_name), 1)
+        if existing_instance_id:
+            vm_id = int(existing_instance_id)
+            vm_info = one.vm.info(vm_id)
+            result["instance_id"] = str(vm_id)
+            result["name"] = str(get_value(vm_info, "NAME", "")) or f"one-{vm_id}"
+            result["existing_instance"] = True
+            one.vm.update(vm_id, build_tag_template(result["name"]), 1)
+        else:
+            vm_id = one.template.instantiate(args.template_id, instance_name)
+            vm_info = None
+            result["instance_id"] = str(vm_id)
+            one.vm.update(vm_id, build_tag_template(instance_name), 1)
 
         start_time = time.time()
-        vm_info = None
         while time.time() - start_time < args.timeout:
             vm_info = one.vm.info(vm_id)
             state = int(get_value(vm_info, "STATE", -1))
@@ -410,45 +468,7 @@ def main() -> int:
             args.nico_ready_timeout,
             args.interval,
         )
-        template = get_value(vm_info, "TEMPLATE", {})
-        context = get_context(template)
-        user_key = get_user_ssh_public_key(one, vm_info)
-        context_key = str(context.get("SSH_PUBLIC_KEY", "") or "")
-        requested_key_names = public_key_fingerprints(user_key)
-        observed_key_names = public_key_fingerprints(context_key)
-
-        result["nico_instance_id"] = deploy_id
-        result["deploy_id"] = deploy_id
-        public_ip, network_id = get_ip(vm_info)
-        public_ip = instance_ip(nico_instance) or public_ip
-        if public_ip:
-            result["public_ip"] = public_ip
-            result["private_ip"] = public_ip
-        result["nico_status"] = str(nico_instance.get("status") or "")
-        result["nico_statuses"] = nico_statuses
-        result["nico_ready"] = result["nico_status"] == "Ready"
-        if monitoring.get("NICO_STATUS"):
-            result["opennebula_nico_status"] = str(monitoring["NICO_STATUS"])
-        if nico_instance.get("machineId"):
-            result["machine_id"] = str(nico_instance["machineId"])
-        elif monitoring.get("MACHINE_ID"):
-            result["machine_id"] = str(monitoring["MACHINE_ID"])
-        if network_id:
-            result["network_id"] = network_id
-            result["vpc_id"] = network_id
-
-        result["requested_key_name"] = ",".join(requested_key_names)
-        result["key_name"] = ",".join(observed_key_names)
-        result["contextualization_completed"] = bool(context)
-        result["tests"] = {
-            "specified_key": {
-                "passed": bool(requested_key_names) and requested_key_names == observed_key_names,
-                "message": "CONTEXT/SSH_PUBLIC_KEY matches user TEMPLATE/SSH_PUBLIC_KEY"
-                if requested_key_names == observed_key_names
-                else "CONTEXT/SSH_PUBLIC_KEY does not match user TEMPLATE/SSH_PUBLIC_KEY",
-                "probes": ["user_ssh_public_key", "context_ssh_public_key"],
-            }
-        }
+        populate_result_from_vm(result, one, vm_info, deploy_id, monitoring, nico_instance, nico_statuses)
 
         result["success"] = True
 

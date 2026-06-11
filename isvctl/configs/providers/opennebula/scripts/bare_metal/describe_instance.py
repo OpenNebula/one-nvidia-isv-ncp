@@ -266,6 +266,10 @@ def main() -> int:
         if public_ip:
             result["public_ip"] = public_ip
             result["private_ip"] = public_ip
+        result["ssh_user"] = "ubuntu"
+        if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+            result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+            result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
         if network_id:
             result["network_id"] = network_id
             result["vpc_id"] = network_id

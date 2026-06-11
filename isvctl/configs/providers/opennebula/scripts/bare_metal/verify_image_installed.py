@@ -243,7 +243,7 @@ def main() -> int:
     parser.add_argument("--instance-id", type=int, required=True, help="OpenNebula VM ID")
     parser.add_argument("--api-timeout", type=int, default=60, help="NICo API request timeout in seconds")
     parser.add_argument("--ssh-timeout", type=int, default=60, help="SSH command timeout in seconds")
-    parser.add_argument("--ssh-wait-timeout", type=int, default=60, help="Seconds to wait for SSH readiness")
+    parser.add_argument("--ssh-wait-timeout", type=int, default=1800, help="Seconds to wait for SSH readiness")
     args = parser.parse_args()
     ssh_user = "ubuntu"
 

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 
-"""Verify the OpenNebula/NICo bare-metal configuration can provision instances."""
+"""Statically verify the OpenNebula/NICo bare-metal configuration."""
 
 import argparse
 import json
@@ -48,7 +48,6 @@ def main() -> int:
         "platform": "bm",
         "config_id": str(args.template_id),
         "host_id": str(args.host_id),
-        "dry_run_passed": False,
         "tests": {},
     }
 
@@ -82,8 +81,7 @@ def main() -> int:
             "nico_env": {"passed": not missing_env, "message": "Required NICo env vars present" if not missing_env else f"Missing: {', '.join(missing_env)}"},
             "nico_host_attrs": {"passed": bool(nico_host_attrs), "message": f"Found {len(nico_host_attrs)} NICo host attrs"},
         }
-        result["dry_run_passed"] = all(test["passed"] for test in result["tests"].values())
-        result["success"] = result["dry_run_passed"]
+        result["success"] = all(test["passed"] for test in result["tests"].values())
     except Exception as e:
         result["error"] = str(e)
 

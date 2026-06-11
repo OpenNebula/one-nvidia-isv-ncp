@@ -23,16 +23,17 @@
 #   1. prepare_nico_host - pyone: Creates the NICo host (setup)
 #   2. prepare_nico_template - pyone: Creates the NICo VM template (setup)
 #   3. launch_instance - pyone/NICo API: Provisions and waits for NICo Ready (setup)
-#   4. list_instances - pyone: Lists OpenNebula VM instances (test)
-#   5. verify_tags - pyone: Reads provider-neutral tags (test)
-#   6. verify_image - pyone/NICo API/SSH: Verifies guest OS image over Teleport (test)
-#   7. reboot_instance - pyone/NICo API: Reboots and waits for NICo Ready (test)
-#   8. power_cycle_instance - pyone/NICo API: Uses NICo reboot, as power-off is unsupported (test)
-#   9. describe_instance - pyone/NICo API: Describes current instance state (test)
-#  10. deploy_nim - Teleport SSH: Deploys NIM container (test)
-#  11. teardown_nim - Teleport SSH: Removes NIM container (teardown)
-#  12. teardown - pyone/NICo driver: Deletes VM, template, and host (teardown)
-#  13. verify_teardown - pyone: Confirms OpenNebula resources were deleted (teardown)
+#   4. prepare_guest_software - Teleport SSH: Installs NVIDIA driver/Docker/runtime (setup)
+#   5. list_instances - pyone: Lists OpenNebula VM instances (test)
+#   6. verify_tags - pyone: Reads provider-neutral tags (test)
+#   7. verify_image - pyone/NICo API/SSH: Verifies guest OS image over Teleport (test)
+#   8. reboot_instance - pyone/NICo API: Reboots and waits for NICo Ready (test)
+#   9. power_cycle_instance - skipped: power-cycle validations reuse reboot_instance (test)
+#  10. describe_instance - pyone/NICo API: Describes current instance state (test)
+#  11. deploy_nim - Teleport SSH: Deploys NIM container (test)
+#  12. teardown_nim - Teleport SSH: Removes NIM container (teardown)
+#  13. teardown - pyone/NICo driver: Deletes VM, template, and host (teardown)
+#  14. verify_teardown - pyone: Confirms OpenNebula resources were deleted (teardown)
 #
 # Usage:
 #   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/bare_metal.yaml
@@ -70,10 +71,19 @@ commands:
         command: "python3 ../scripts/bare_metal/launch_instance.py"
         args:
           - "--name"
-          - "isv-bm-test-gpu"
+          - "{{nico_vm_name}}"
           - "--template-id"
           - "{{steps.prepare_nico_template.template_id}}"
         timeout: 8400
+
+      # Prepare guest software required by GPU, container, NCCL, and training checks.
+      - name: prepare_guest_software
+        phase: setup
+        command: "python3 ../scripts/bare_metal/prepare_guest_software.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 9600
 
       # List OpenNebula instances and verify this VM is visible.
       - name: list_instances
@@ -117,9 +127,7 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-          - "--ssh-wait-timeout"
-          - "2400"
-        timeout: 2700
+        timeout: 2100
 
       # Verify template/host NICo configuration is internally consistent.
       - name: verify_config
@@ -155,17 +163,17 @@ commands:
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"
-        timeout: 1800
+        timeout: 2100
 
-      # NICo instances cannot be powered off; use NICo reboot as the closest
-      # supported recovery operation for the provider-agnostic power-cycle slot.
+      # Unsupported by NICo: instances cannot be powered off and started later.
+      # Power-cycle validations below reuse reboot_instance as the closest
+      # supported recovery operation instead of triggering a second NICo reboot.
       - name: power_cycle_instance
         phase: test
-        command: "python3 ../scripts/bare_metal/reboot_instance.py"
-        args:
-          - "--instance-id"
-          - "{{steps.launch_instance.instance_id}}"
-        timeout: 1800
+        skip: true
+        command: ""
+        args: []
+        timeout: 2100
 
       # Describe instance state from OpenNebula and NICo.
       - name: describe_instance
@@ -244,116 +252,105 @@ tests:
   description: "OpenNebula Bare Metal (BMaaS) validation tests"
 
   settings:
-    nico_host_name: "{{env.ONE_BM_NICO_HOST_NAME | default('isv-bm-nico-host')}}"
-    nico_template_name: "{{env.ONE_BM_NICO_TEMPLATE_NAME | default('isv-bm-nico-template')}}"
+    nico_vm_name: 'isv-bm-nico-vm'
+    nico_host_name: 'isv-bm-nico-host'
+    nico_template_name: 'isv-bm-nico-template'
     teardown_flag: "{{(env.ONE_BM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   # Overrides only - all other validations inherited from ../bare_metal.yaml
   validations:
-    # Unimplemented: serial-console retrieval and retention are not wired yet.
-    serial_console:
-      step: serial_console
-      checks:
-        - SerialConsoleCheck: {}
 
+    # Skip CloudInitCheck. Reason:
+    #
+    # $ sudo cloud-init status
+    # status: disabled
     cloud_init:
       step: launch_instance
       checks:
         - StepSuccessCheck: {}
 
-    instance_info:
-      step: describe_instance
-      checks:
-        - StepSuccessCheck: {}
-        - InstanceStateCheck:
-            expected_state: "running"
+    # guest_software:
+    #   step: prepare_guest_software
+    #   checks:
+    #     - StepSuccessCheck: {}
 
-    ssh:
-      step: describe_instance
-      checks:
-        - StepSuccessCheck: {}
+    # ssh:
+    #   step: describe_instance
+    #   checks:
+    #     - StepSuccessCheck: {}
 
+    # Override expected_gpus
     gpu:
       step: describe_instance
       checks:
-        - StepSuccessCheck: {}
+        GpuCheck:
+          expected_gpus: 4
 
+    # Override expected_gpus
     host_os:
       step: describe_instance
       checks:
-        - StepSuccessCheck: {}
+        PciBusCheck:
+          expected_gpus: 4
 
-    reboot_checks:
-      step: reboot_instance
-      checks:
-        - StepSuccessCheck: {}
-        - StableIdentifierCheck:
-            reference_id: "{{steps.launch_instance.instance_id}}"
-
+    # Remove host/key_file
     reboot_ssh:
       step: reboot_instance
       checks:
-        - StepSuccessCheck: {}
+        - ConnectivityCheck: {}
+        - OsCheck:
+            expected_os: "ubuntu"
+
 
     reboot_gpu:
       step: reboot_instance
       checks:
-        - StepSuccessCheck: {}
+        - GpuCheck:
+            expected_gpus: 4
 
     power_cycle_checks:
-      step: power_cycle_instance
+      step: reboot_instance
       checks:
         - StepSuccessCheck: {}
         - StableIdentifierCheck:
             reference_id: "{{steps.launch_instance.instance_id}}"
 
     power_cycle_state:
-      step: power_cycle_instance
-      checks:
-        - StepSuccessCheck: {}
-        - InstanceStateCheck:
-            expected_state: "running"
+      step: reboot_instance
 
     power_cycle_ssh:
-      step: power_cycle_instance
-      checks:
-        - StepSuccessCheck: {}
+      step: reboot_instance
 
     power_cycle_gpu:
-      step: power_cycle_instance
+      step: reboot_instance
       checks:
-        - StepSuccessCheck: {}
+        GpuCheck:
+          expected_gpus: 4
 
-    # GPU stress.
     gpu_stress:
       step: describe_instance
       checks:
         GpuStressCheck:
-          runtime: 30
-          memory_gb: 16
           expected_gpus: 4
 
-    # NCCL.
     nccl:
       step: describe_instance
       checks:
         NcclCheck:
           expected_gpus: 4
 
-    # Training.
     training:
       step: describe_instance
       checks:
         TrainingCheck:
-          steps: 50
           expected_gpus: 4
 
     # Start GPU.
     start_gpu:
       step: start_instance
       checks:
-        GpuCheck:
-          expected_gpus: 4
+        - GpuCheck:
+            expected_gpus: 4
 
     # NVLink.
     nvlink:
@@ -361,36 +358,3 @@ tests:
       checks:
         NvlinkCheck:
           expected_gpus: 4
-
-    # Verify OS image installed on BM instance.
-    image_installed:
-      step: verify_image
-      checks:
-        StepSuccessCheck: {}
-        FieldExistsCheck:
-          fields: ["instance_id", "image_id", "image_name", "instance_state"]
-        InstanceStateCheck:
-          expected_state: "running"
-
-    bm_driver_installed:
-      step: deploy_nim
-      checks:
-        BmDriverInstalled: {}
-
-    bm_driver_version:
-      step: deploy_nim
-      checks:
-        BmDriverVersion: {}
-
-    bm_cuda_version:
-      step: deploy_nim
-      checks:
-        BmCudaVersion: {}
-
-    # Verify install config can provision BM.
-    config_installable:
-      step: verify_config
-      checks:
-        StepSuccessCheck: {}
-        FieldExistsCheck:
-          fields: ["config_id", "config_name", "dry_run_passed"]

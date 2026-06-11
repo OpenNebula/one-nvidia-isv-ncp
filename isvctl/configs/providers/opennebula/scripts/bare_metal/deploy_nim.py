@@ -191,7 +191,6 @@ def wait_for_nico_reboot(api: NicoAPI, deploy_id: str, timeout: int, interval: i
         status = str(instance.get("status") or "")
         if status and (not statuses or statuses[-1] != status):
             statuses.append(status)
-            print(f"NICo status after driver-install reboot: {status}", file=sys.stderr)
 
         if status and status != "Ready":
             saw_transition = True
@@ -201,103 +200,6 @@ def wait_for_nico_reboot(api: NicoAPI, deploy_id: str, timeout: int, interval: i
         time.sleep(interval)
 
     raise RuntimeError(f"Timed out waiting for NICo reboot recovery; statuses={statuses}")
-
-
-def ensure_docker(host: str) -> None:
-    """Install and start Docker if the guest image does not include it."""
-    exit_code, _stdout, _stderr = ssh_run(host, "command -v docker >/dev/null 2>&1", 30)
-    if exit_code == 0:
-        return
-
-    install_cmd = (
-        "sudo apt-get update && "
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io && "
-        "(sudo systemctl enable --now docker || sudo service docker start)"
-    )
-    exit_code, stdout, stderr = ssh_run(host, install_cmd, 600)
-    if exit_code != 0:
-        raise RuntimeError(f"Docker installation failed: {stderr.strip() or stdout.strip()}")
-
-
-def ensure_host_nvidia_driver(instance_id: int, deploy_id: str, host: str, api_timeout: int, reboot_timeout: int) -> None:
-    """Fail early if the guest image has no working NVIDIA driver."""
-    exit_code, stdout, stderr = ssh_run(host, "nvidia-smi", 60)
-    if exit_code == 0:
-        return
-
-    print("NVIDIA driver not available; installing CUDA toolkit and nvidia-open driver", file=sys.stderr)
-    detect_cmd = ". /etc/os-release && printf '%s %s' \"$VERSION_ID\" \"$(dpkg --print-architecture)\""
-    exit_code, stdout, stderr = ssh_run(host, detect_cmd, 30)
-    if exit_code != 0:
-        raise RuntimeError(f"Could not detect Ubuntu version/architecture: {stderr.strip() or stdout.strip()}")
-
-    version_id, deb_arch = stdout.strip().split(maxsplit=1)
-    ubuntu_version = version_id.replace(".", "")
-    cuda_arch = "sbsa" if deb_arch == "arm64" else "x86_64"
-    cuda_repo = f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ubuntu_version}/{cuda_arch}"
-
-    install_cmd = " && ".join(
-        [
-            "sudo apt-get update",
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y linux-headers-$(uname -r) wget ca-certificates gnupg",
-            f"cd /tmp && wget -q {cuda_repo}/cuda-keyring_1.1-1_all.deb -O cuda-keyring_1.1-1_all.deb",
-            "sudo dpkg -i /tmp/cuda-keyring_1.1-1_all.deb",
-            "sudo apt-get update",
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-13-0 nvidia-open",
-            "sudo systemctl enable nvidia-persistenced || true",
-        ]
-    )
-    exit_code, stdout, stderr = ssh_run(host, install_cmd, 1800)
-    if exit_code != 0:
-        raise RuntimeError(f"NVIDIA driver installation failed: {stderr.strip() or stdout.strip()}")
-
-    api = NicoAPI(api_timeout)
-    api_reboot_instance(instance_id)
-    wait_for_nico_reboot(api, deploy_id, reboot_timeout)
-    wait_for_ssh(host, timeout=300)
-
-    deadline = time.time() + 900
-    last_output = ""
-    while time.time() < deadline:
-        exit_code, stdout, stderr = ssh_run(host, "nvidia-smi", 60)
-        last_output = (stderr or stdout).strip()
-        if exit_code == 0:
-            return
-        time.sleep(15)
-
-    raise RuntimeError(f"nvidia-smi did not become ready after driver installation: {last_output}")
-
-
-def ensure_nvidia_container_runtime(host: str) -> None:
-    """Install/configure NVIDIA Container Toolkit for Docker GPU access."""
-    exit_code, _stdout, _stderr = ssh_run(host, "sudo docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1", 300)
-    if exit_code == 0:
-        return
-
-    install_cmd = " && ".join(
-        [
-            "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | "
-            "sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
-            "curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | "
-            "sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | "
-            "sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null",
-            "sudo apt-get update",
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit",
-            "sudo nvidia-ctk runtime configure --runtime=docker",
-            "sudo systemctl restart docker || sudo service docker restart",
-        ]
-    )
-    exit_code, stdout, stderr = ssh_run(host, install_cmd, 900)
-    if exit_code != 0:
-        raise RuntimeError(f"NVIDIA Container Toolkit installation failed: {stderr.strip() or stdout.strip()}")
-
-    exit_code, stdout, stderr = ssh_run(
-        host,
-        "sudo docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi",
-        300,
-    )
-    if exit_code != 0:
-        raise RuntimeError(f"Docker GPU runtime check failed: {stderr.strip() or stdout.strip()}")
 
 
 def main() -> int:
@@ -310,7 +212,6 @@ def main() -> int:
     parser.add_argument("--container-name", default="isv-nim", help="Docker container name")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds to wait for NIM health endpoint")
     parser.add_argument("--api-timeout", type=int, default=60, help="NICo API request timeout")
-    parser.add_argument("--nico-reboot-timeout", type=int, default=1800, help="Seconds to wait for NICo reboot recovery")
     parser.add_argument("--ssh-wait-timeout", type=int, default=60, help="Seconds to wait for SSH readiness")
     args = parser.parse_args()
 
@@ -328,6 +229,9 @@ def main() -> int:
         "health_ready": False,
         "ssh_user": "ubuntu",
     }
+    if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+        result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+        result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
 
     ngc_api_key = os.environ.get("NGC_API_KEY", "") or os.environ.get("NGC_NIM_API_KEY", "")
     if not ngc_api_key:
@@ -340,9 +244,6 @@ def main() -> int:
         result.update({"deploy_id": deploy_id, "nico_instance_id": deploy_id, "host": host, "public_ip": host, "private_ip": host})
 
         wait_for_ssh(host, args.ssh_wait_timeout)
-        ensure_host_nvidia_driver(args.instance_id, deploy_id, host, args.api_timeout, args.nico_reboot_timeout)
-        ensure_docker(host)
-        ensure_nvidia_container_runtime(host)
 
         exit_code, _stdout, stderr = ssh_run(
             host,

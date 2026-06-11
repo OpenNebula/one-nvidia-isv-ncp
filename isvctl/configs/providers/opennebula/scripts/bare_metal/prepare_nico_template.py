@@ -119,20 +119,23 @@ def build_template(args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def object_dict(value: Any) -> dict[str, Any]:
+    """Return a plain dict from a dict-like or pyone object."""
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "__dict__"):
+        return {key: item for key, item in vars(value).items() if not key.startswith("_")}
+    return {}
+
+
 def main() -> int:
     """Create or update a NICo VM template and emit its ID."""
     parser = argparse.ArgumentParser(description="Prepare OpenNebula NICo VM template")
     parser.add_argument("--name", default="isv-bm-nico-template", help="VM template name prefix")
     args = parser.parse_args()
+    existing_template_id = os.environ.get("ONE_BM_EXISTING_TEMPLATE_ID", "")
     args.name = f"{args.name}-{uuid.uuid4().hex[:8]}"
-    args.instance_type_id = env_value("ONE_BM_NICO_INSTANCE_TYPE_ID")
-    args.os_id = env_value("ONE_BM_NICO_OS_ID")
-    args.ssh_key_group_ids = env_value("ONE_BM_NICO_SSH_KEY_GROUP_IDS")
     args.ssh_pubkey = os.environ.get("ONE_BM_NICO_SSH_PUBKEY", "")
-    args.user_data = build_user_data(args.ssh_pubkey)
-    args.vpc_id = env_value("ONE_BM_NICO_VPC_ID")
-    args.vpc_prefix_id = env_value("ONE_BM_NICO_VPC_PREFIX_ID")
-    args.sched_requirements = env_value("ONE_BM_NICO_SCHED_REQUIREMENTS")
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
     auth = os.environ.get("ONE_AUTH", "oneadmin:opennebula")
@@ -145,6 +148,34 @@ def main() -> int:
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
+        if existing_template_id:
+            template_id = int(existing_template_id)
+            template = one.template.info(template_id)
+            template_body = object_dict(get_value(template, "TEMPLATE", {}))
+            nics = get_value(template_body, "NIC", [])
+            if not isinstance(nics, list):
+                nics = [nics]
+            first_nic = object_dict(nics[0]) if nics else {}
+            result["template_id"] = str(template_id)
+            result["template_name"] = str(get_value(template, "NAME", "")) or f"template-{template_id}"
+            result["instance_type_id"] = str(template_body.get("NICO_INSTANCE_TYPE_ID") or "")
+            result["vpc_id"] = str(template_body.get("NICO_VPC_ID") or "")
+            result["vpc_prefix_id"] = str(first_nic.get("NICO_VPC_PREFIX_ID") or "")
+            result["user_data_public_key"] = bool(template_body.get("NICO_USER_DATA"))
+            result["user_data_extra_public_key"] = bool(args.ssh_pubkey)
+            result["existing_template"] = True
+            result["success"] = True
+            print(json.dumps(result, indent=2))
+            return 0
+
+        args.instance_type_id = env_value("ONE_BM_NICO_INSTANCE_TYPE_ID")
+        args.os_id = env_value("ONE_BM_NICO_OS_ID")
+        args.ssh_key_group_ids = env_value("ONE_BM_NICO_SSH_KEY_GROUP_IDS")
+        args.user_data = build_user_data(args.ssh_pubkey)
+        args.vpc_id = env_value("ONE_BM_NICO_VPC_ID")
+        args.vpc_prefix_id = env_value("ONE_BM_NICO_VPC_PREFIX_ID")
+        args.sched_requirements = env_value("ONE_BM_NICO_SCHED_REQUIREMENTS")
+
         template_body = build_template(args)
         template_id = int(one.template.allocate(template_body))
 

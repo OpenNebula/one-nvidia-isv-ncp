@@ -6,6 +6,7 @@
 
 import argparse
 import json
+import os
 import re
 import shlex
 import sys
@@ -30,7 +31,11 @@ def main() -> int:
         "container_removed": False,
         "image_removed": False,
         "container_name": args.container_name,
+        "ssh_user": "ubuntu",
     }
+    if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+        result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+        result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
 
     if not _CONTAINER_NAME_RE.match(args.container_name):
         result["error"] = f"Invalid container name: {args.container_name!r}"

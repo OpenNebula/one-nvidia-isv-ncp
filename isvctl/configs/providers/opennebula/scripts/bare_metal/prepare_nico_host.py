@@ -38,6 +38,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare OpenNebula NICo host")
     parser.add_argument("--name", default="isv-bm-nico-host", help="OpenNebula host name prefix")
     args = parser.parse_args()
+    existing_host_id = os.environ.get("ONE_BM_EXISTING_HOST_ID", "")
     host_name = f"{args.name}-{uuid.uuid4().hex[:8]}"
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
@@ -51,6 +52,16 @@ def main() -> int:
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)
+        if existing_host_id:
+            host_id = int(existing_host_id)
+            host_info = one.host.info(host_id)
+            result["host_id"] = str(host_id)
+            result["host_name"] = str(get_value(host_info, "NAME", "")) or f"host-{host_id}"
+            result["existing_host"] = True
+            result["success"] = True
+            print(json.dumps(result, indent=2))
+            return 0
+
         host_id = int(one.host.allocate(host_name, "nico", "nico", 0))
 
         attrs = {

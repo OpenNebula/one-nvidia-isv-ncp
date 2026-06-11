@@ -13,8 +13,7 @@ import time
 try:
     import pyone
 except ImportError:
-    print("Error: pyone is not installed. Please install pyone.", file=sys.stderr)
-    sys.exit(1)
+    pyone = None
 
 
 def wait_for_vm_terminated(one: object, instance_id: int, timeout: int = 600) -> bool:
@@ -33,6 +32,11 @@ def wait_for_vm_terminated(one: object, instance_id: int, timeout: int = 600) ->
         time.sleep(5)
 
     return False
+
+
+def using_existing_instance() -> bool:
+    """Return whether the run targets a user-provided existing VM."""
+    return bool(os.environ.get("ONE_BM_EXISTING_INSTANCE_ID", "").strip())
 
 
 def main() -> int:
@@ -59,6 +63,23 @@ def main() -> int:
         result["state"] = "running"
         print(json.dumps(result, indent=2))
         return 0
+
+    if using_existing_instance():
+        result["success"] = True
+        result["skipped"] = True
+        result["state"] = "running"
+        result["message"] = "Skipping teardown for ONE_BM_EXISTING_INSTANCE_ID"
+        result["cleanup"] = {
+            "instance": "skipped_existing_instance",
+            "template": "skipped_existing_instance",
+            "host": "skipped_existing_instance",
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if pyone is None:
+        print("Error: pyone is not installed. Please install pyone.", file=sys.stderr)
+        return 1
 
     xmlrpc_url = os.environ.get("ONE_XMLRPC", "http://localhost:2633/RPC2")
     auth = os.environ.get("ONE_AUTH", "oneadmin:opennebula")

@@ -47,6 +47,7 @@ from isvtest.core.ssh import (
     get_ssh_config,
     parse_cpu_range_count,
     run_ssh_command,
+    ssh_auth_available,
 )
 from isvtest.core.validation import BaseValidation
 
@@ -149,14 +150,15 @@ class ConnectivityCheck(BaseValidation):
         host = ssh_cfg["ssh_host"]
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
+        inventory = self.config.get("inventory", {})
 
         if not host:
             self.set_failed("Missing 'host' in config")
             return
-        if not key_path:
+        if not ssh_auth_available(key_path, self.config, inventory):
             self.set_failed("Missing 'key_file' in config")
             return
-        if not os.path.exists(key_path):
+        if key_path and not os.path.exists(key_path):
             self.set_failed(f"SSH key file not found: {key_path}")
             return
 
@@ -164,7 +166,7 @@ class ConnectivityCheck(BaseValidation):
 
         ssh = None
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=inventory)
             self.report_subtest("ssh_connect", True, f"Connected to {host}")
 
             # Test command execution
@@ -233,12 +235,12 @@ class OsCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         expected_os = self.config.get("expected_os", "").lower()
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
             try:
                 # Get OS info
                 exit_code, stdout, _ = run_ssh_command(ssh, "cat /etc/os-release")
@@ -298,12 +300,12 @@ class CpuInfoCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # Check CPU count
             exit_code, stdout, _ = run_ssh_command(ssh, "nproc")
@@ -379,12 +381,12 @@ class VcpuPinningCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         expected_vcpus = self.config.get("expected_vcpus")
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # --- Check 1: vCPU count ---
             exit_code, stdout, _ = run_ssh_command(ssh, "nproc")
@@ -530,12 +532,12 @@ class PciBusCheck(BaseValidation):
         expected_gpus = self.config.get("expected_gpus", ssh_cfg.get("gpu_count", 1))
         expected_link_width = self.config.get("expected_link_width")
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # --- Check 1: NVIDIA PCI devices enumeration ---
             exit_code, stdout, _ = run_ssh_command(ssh, "lspci -d 10de: -nn 2>/dev/null || lspci | grep -i nvidia")
@@ -719,14 +721,14 @@ class HostSoftwareCheck(BaseValidation):
         bios_baselines = self.config.get("bios_baselines")
         tpm_baselines = self.config.get("tpm_baselines")
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         failures: list[str] = []
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # ==============================================================
             # 1. Linux Kernel
@@ -1005,14 +1007,16 @@ class GpuCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         expected_gpus = self.config.get("expected_gpus", ssh_cfg.get("gpu_count", 1))
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         self.log.info(f"Testing GPU on {host}")
 
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # Test nvidia-smi
             exit_code, stdout, stderr = run_ssh_command(ssh, "nvidia-smi")
@@ -1092,12 +1096,12 @@ class DriverCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         expected_driver = self.config.get("expected_driver_version")
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # Check kernel version
             exit_code, stdout, _ = run_ssh_command(ssh, "uname -r")
@@ -1176,6 +1180,17 @@ def _detect_ssh_container_runtime(ssh: paramiko.SSHClient) -> str:
     return "docker"
 
 
+def _prune_ssh_container_storage(ssh: paramiko.SSHClient) -> None:
+    """Best-effort cleanup of unused Docker data before large workload image pulls."""
+    run_ssh_command(
+        ssh,
+        "docker system prune -af --volumes >/dev/null 2>&1; "
+        "docker builder prune -af >/dev/null 2>&1; "
+        "sudo apt-get clean >/dev/null 2>&1 || true",
+        timeout=600,
+    )
+
+
 class GpuStressCheck(BaseValidation):
     """Run GPU stress test via SSH using PyTorch matrix multiplications.
 
@@ -1208,7 +1223,7 @@ class GpuStressCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1224,7 +1239,9 @@ class GpuStressCheck(BaseValidation):
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # Auto-detect runtime if not explicitly configured
             if not container_runtime:
@@ -1238,6 +1255,7 @@ class GpuStressCheck(BaseValidation):
             if container_runtime == "python":
                 cmd = f"bash -c '{env_vars} {decode_and_run}'"
             else:
+                _prune_ssh_container_storage(ssh)
                 cmd = (
                     f"docker run --rm --gpus all "
                     f"-e GPU_STRESS_RUNTIME={runtime} -e GPU_MEMORY_GB={memory_gb} "
@@ -1330,7 +1348,7 @@ class NcclCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1339,7 +1357,9 @@ class NcclCheck(BaseValidation):
         message_sizes = self.config.get("message_sizes", "-b 1M -e 256M -f 2")
 
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # Verify Docker + NVIDIA runtime are available (NCCL binaries come from the container)
             has_docker = _detect_ssh_container_runtime(ssh) == "docker"
@@ -1369,6 +1389,8 @@ class NcclCheck(BaseValidation):
                 return
 
             self.report_subtest("gpu_count", True, f"{gpu_count} GPUs detected")
+
+            _prune_ssh_container_storage(ssh)
 
             nccl_cmd = (
                 f"docker run --rm --gpus all --ipc=host {image} "
@@ -1470,7 +1492,7 @@ class TrainingCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1487,7 +1509,9 @@ class TrainingCheck(BaseValidation):
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             if not container_runtime:
                 container_runtime = _detect_ssh_container_runtime(ssh)
@@ -1514,6 +1538,7 @@ class TrainingCheck(BaseValidation):
             if container_runtime == "python":
                 cmd = f"bash -c '{env_vars} {write_and_run}'"
             else:
+                _prune_ssh_container_storage(ssh)
                 cmd = (
                     f"docker run --rm --gpus all --ipc=host "
                     f"-e TRAIN_STEPS={steps} -e TRAIN_BATCH_SIZE={batch_size} "
@@ -1624,7 +1649,7 @@ class NvlinkCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1632,7 +1657,9 @@ class NvlinkCheck(BaseValidation):
 
         ssh = None
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # Check NVLink status per GPU
             exit_code, stdout, _ = run_ssh_command(ssh, "nvidia-smi nvlink -s 2>/dev/null")
@@ -1720,7 +1747,7 @@ class InfiniBandCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1728,7 +1755,9 @@ class InfiniBandCheck(BaseValidation):
 
         ssh = None
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # Check if ibstat is available
             exit_code, stdout, _ = run_ssh_command(ssh, "ibstat 2>/dev/null")
@@ -1818,7 +1847,7 @@ class EthernetCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
@@ -1826,7 +1855,9 @@ class EthernetCheck(BaseValidation):
         ping_target = self.config.get("ping_target")
 
         try:
-            ssh = get_ssh_client(host, user, key_path, timeout=60)
+            ssh = get_ssh_client(
+                host, user, key_path, timeout=60, config=self.config, inventory=self.config.get("inventory", {})
+            )
 
             # List all UP interfaces
             exit_code, stdout, _ = run_ssh_command(
@@ -1921,12 +1952,12 @@ class ContainerRuntimeCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         ngc_api_key = self.config.get("ngc_api_key", get_ngc_api_key())
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, self.config.get("inventory", {})):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=self.config.get("inventory", {}))
 
             # Check Docker
             _, stdout, _ = run_ssh_command(ssh, "docker --version 2>/dev/null || echo 'not_found'")
@@ -2017,12 +2048,13 @@ class CloudInitCheck(BaseValidation):
         metadata_url = str(self.config.get("metadata_url", "http://169.254.169.254/latest/meta-data/"))
         metadata_headers: dict[str, str] = self.config.get("metadata_headers", {})
 
-        if not host or not key_path:
+        inventory = self.config.get("inventory", {})
+        if not host or not ssh_auth_available(key_path, self.config, inventory):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=inventory)
 
             # Check cloud-init status
             exit_code, stdout, _ = run_ssh_command(ssh, "cloud-init status 2>/dev/null || echo 'not_found'")

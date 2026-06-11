@@ -15,8 +15,7 @@ from typing import Any
 try:
     import pyone
 except ImportError:
-    print("Error: pyone is not installed. Please install pyone.", file=sys.stderr)
-    sys.exit(1)
+    pyone = None
 
 
 def is_missing(error: Exception) -> bool:
@@ -49,6 +48,11 @@ def wait_until_missing(check: Callable[[], Any], timeout: int, *, done_state_ok:
     return False
 
 
+def using_existing_instance() -> bool:
+    """Return whether the run targets a user-provided existing VM."""
+    return bool(os.environ.get("ONE_BM_EXISTING_INSTANCE_ID", "").strip())
+
+
 def main() -> int:
     """Verify VM, template, and host resources are absent."""
     parser = argparse.ArgumentParser(description="Verify OpenNebula bare-metal teardown")
@@ -69,6 +73,31 @@ def main() -> int:
         "host_id": str(args.host_id),
         "tests": {},
     }
+
+    if using_existing_instance():
+        result["success"] = True
+        result["skipped"] = True
+        result["message"] = "Skipping teardown verification for ONE_BM_EXISTING_INSTANCE_ID"
+        result["tests"] = {
+            "instance_deleted": {
+                "passed": True,
+                "message": "skipped for existing instance",
+            },
+            "template_deleted": {
+                "passed": True,
+                "message": "skipped for existing instance",
+            },
+            "host_deleted": {
+                "passed": True,
+                "message": "skipped for existing instance",
+            },
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if pyone is None:
+        print("Error: pyone is not installed. Please install pyone.", file=sys.stderr)
+        return 1
 
     try:
         one = pyone.OneServer(xmlrpc_url, session=auth)

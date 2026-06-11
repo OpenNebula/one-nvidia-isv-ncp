@@ -8,7 +8,9 @@ import argparse
 import base64
 import json
 import os
+import shlex
 import ssl
+import subprocess
 import sys
 import time
 from typing import Any
@@ -102,6 +104,15 @@ def get_ip(vm_info: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
+def instance_ip(instance: dict[str, Any]) -> str | None:
+    """Return the first IP address reported by NICo for the instance."""
+    for nic in instance.get("interfaces") or []:
+        for ip in nic.get("ipAddresses") or []:
+            if ip:
+                return str(ip)
+    return None
+
+
 def map_state(state: int, lcm_state: int) -> str:
     """Map OpenNebula VM states to the provider-neutral instance contract."""
     if state == 3 and lcm_state == 3:
@@ -117,21 +128,20 @@ def map_state(state: int, lcm_state: int) -> str:
     return "unknown"
 
 
+def is_nico_ready(status: str) -> bool:
+    """Return whether NICo reports the instance as ready for lifecycle checks."""
+    return status in {"Ready", "BootCompleted"}
+
+
 def wait_for_running(one: Any, vm_id: int, timeout: int, interval: int) -> tuple[Any, str]:
     """Wait for the VM to be RUNNING after a reboot request."""
     start_time = time.time()
-    last_state = ""
 
     while time.time() - start_time < timeout:
         vm_info = one.vm.info(vm_id)
         state = int(get_value(vm_info, "STATE", -1))
         lcm_state = int(get_value(vm_info, "LCM_STATE", -1))
         mapped_state = map_state(state, lcm_state)
-        state_text = f"{mapped_state} ({state}/{lcm_state})"
-
-        if state_text != last_state:
-            print(f"OpenNebula state: {state_text}", file=sys.stderr)
-            last_state = state_text
 
         if mapped_state == "running":
             return vm_info, mapped_state
@@ -141,6 +151,44 @@ def wait_for_running(one: Any, vm_id: int, timeout: int, interval: int) -> tuple
         time.sleep(interval)
 
     raise RuntimeError("Timeout waiting for instance to return to RUNNING state")
+
+
+def ssh_ready(host: str) -> bool:
+    """Return whether the instance accepts SSH commands through Teleport."""
+    proxy_command = (
+        f"tsh ssh --proxy={shlex.quote(env_value('ONE_BM_NICO_PROXY'))} "
+        f"{shlex.quote(env_value('ONE_BM_NICO_JUMPHOST'))} nc %h %p"
+    )
+    ssh_command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        f"ProxyCommand={proxy_command}",
+        f"ubuntu@{host}",
+        "true",
+    ]
+    result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=30)
+    return result.returncode == 0
+
+
+def wait_for_ssh(host: str, timeout: int, interval: int) -> None:
+    """Wait until SSH accepts commands after reboot."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if ssh_ready(host):
+                return
+        except (RuntimeError, subprocess.SubprocessError):
+            pass
+        time.sleep(interval)
+    raise RuntimeError(f"Timed out waiting for SSH after reboot on {host}")
 
 
 class NicoAPIError(RuntimeError):
@@ -240,6 +288,7 @@ def parse_error_body(body: str) -> str:
 def wait_for_nico_reboot(
     api: NicoAPI,
     deploy_id: str,
+    before_status: str,
     timeout: int,
     interval: int,
 ) -> tuple[dict[str, Any], list[str]]:
@@ -254,11 +303,10 @@ def wait_for_nico_reboot(
         status = str(last_instance.get("status") or "")
         if status and (not statuses or statuses[-1] != status):
             statuses.append(status)
-            print(f"NICo status: {status}", file=sys.stderr)
 
-        if status and status != "Ready":
+        if status and not is_nico_ready(status):
             saw_transition = True
-        elif status == "Ready" and saw_transition:
+        elif is_nico_ready(status) and (saw_transition or status != before_status):
             return last_instance, statuses
 
         time.sleep(interval)
@@ -285,6 +333,7 @@ def main() -> int:
         "instance_id": str(args.instance_id),
         "reboot_initiated": False,
         "reboot_confirmed": False,
+        "ssh_ready": False,
         "nico_ready": False,
     }
 
@@ -299,7 +348,7 @@ def main() -> int:
         before_instance = api.get_instance(before_deploy_id)
         before_status = str(before_instance.get("status") or "")
         result["pre_reboot_nico_status"] = before_status
-        if before_status != "Ready":
+        if not is_nico_ready(before_status):
             raise RuntimeError(f"NICo instance {before_deploy_id} is status {before_status}, expected Ready")
 
         if before_deploy_id:
@@ -320,12 +369,13 @@ def main() -> int:
         nico_instance, statuses = wait_for_nico_reboot(
             api,
             before_deploy_id,
+            before_status,
             args.nico_timeout,
             args.interval,
         )
         result["nico_statuses"] = statuses
         result["nico_status"] = str(nico_instance.get("status") or "")
-        result["nico_ready"] = result["nico_status"] == "Ready"
+        result["nico_ready"] = is_nico_ready(result["nico_status"])
         if nico_instance.get("machineId"):
             result["machine_id"] = str(nico_instance["machineId"])
 
@@ -348,12 +398,22 @@ def main() -> int:
             result["machine_id"] = str(monitoring["MACHINE_ID"])
 
         public_ip, network_id = get_ip(vm_info)
+        public_ip = public_ip or instance_ip(nico_instance)
         if public_ip:
             result["public_ip"] = public_ip
             result["private_ip"] = public_ip
+        result["ssh_user"] = "ubuntu"
+        if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+            result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+            result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
         if network_id:
             result["network_id"] = network_id
             result["vpc_id"] = network_id
+
+        if not public_ip:
+            raise RuntimeError("OpenNebula VM has no IP after reboot")
+        wait_for_ssh(public_ip, args.timeout, args.interval)
+        result["ssh_ready"] = True
 
         result["reboot_confirmed"] = True
         result["success"] = True
