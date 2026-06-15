@@ -19,6 +19,7 @@ from typing import ClassVar
 
 from isvtest.core.nvidia import compare_versions, parse_cuda_version
 from isvtest.core.validation import BaseValidation
+from isvtest.validations.bm_driver import run_guest_or_local_command
 
 
 class BmCudaVersion(BaseValidation):
@@ -29,14 +30,14 @@ class BmCudaVersion(BaseValidation):
     labels: ClassVar[tuple[str, ...]] = ("bare_metal",)
 
     def run(self) -> None:
-        result = self.run_command("nvidia-smi")
+        exit_code, stdout, stderr = run_guest_or_local_command(self, "nvidia-smi")
 
-        if result.exit_code != 0:
-            self.set_failed(f"nvidia-smi failed: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"nvidia-smi failed: {stderr}")
             return
 
         # Parse CUDA version using shared parser
-        cuda_version = parse_cuda_version(result.stdout)
+        cuda_version = parse_cuda_version(stdout)
 
         if not cuda_version:
             self.set_failed("CUDA version not found in nvidia-smi output")

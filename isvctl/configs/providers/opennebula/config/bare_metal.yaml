@@ -260,10 +260,8 @@ tests:
   # Overrides only - all other validations inherited from ../bare_metal.yaml
   validations:
 
-    # Skip CloudInitCheck. Reason:
-    #
-    # $ sudo cloud-init status
-    # status: disabled
+    # Do not run CloudInitCheck for OpenNebula BM. The NICo BM image reports
+    # `cloud-init status: disabled`; launch_instance already gates readiness.
     cloud_init:
       step: launch_instance
       checks:
@@ -292,6 +290,12 @@ tests:
       checks:
         PciBusCheck:
           expected_gpus: 4
+        BmDriverInstalled: {}
+        BmDriverVersion: {}
+        BmCudaVersion: {}
+        BmGpuDetection: {}
+        BmGpuHealth: {}
+        BmGpuComputeCapability: {}
 
     # Remove host/key_file
     reboot_ssh:
