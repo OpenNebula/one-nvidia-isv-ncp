@@ -1,0 +1,360 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# OpenNebula Bare Metal (BMaaS) Validation Configuration
+#
+# Imports validations from the provider-agnostic BM canonical config.
+# This file provides OpenNebula-specific commands, settings, and validation
+# overrides for the NICo-backed OpenNebula bare-metal lifecycle.
+#
+# Steps:
+#   1. prepare_nico_host - pyone: Creates the NICo host (setup)
+#   2. prepare_nico_template - pyone: Creates the NICo VM template (setup)
+#   3. launch_instance - pyone/NICo API: Provisions and waits for NICo Ready (setup)
+#   4. prepare_guest_software - Teleport SSH: Installs NVIDIA driver/Docker/runtime (setup)
+#   5. list_instances - pyone: Lists OpenNebula VM instances (test)
+#   6. verify_tags - pyone: Reads provider-neutral tags (test)
+#   7. verify_image - pyone/NICo API/SSH: Verifies guest OS image over Teleport (test)
+#   8. reboot_instance - pyone/NICo API: Reboots and waits for NICo Ready (test)
+#   9. power_cycle_instance - skipped: power-cycle validations reuse reboot_instance (test)
+#  10. describe_instance - pyone/NICo API: Describes current instance state (test)
+#  11. deploy_nim - Teleport SSH: Deploys NIM container (test)
+#  12. teardown_nim - Teleport SSH: Removes NIM container (teardown)
+#  13. teardown - pyone/NICo driver: Deletes VM, template, and host (teardown)
+#  14. verify_teardown - pyone: Confirms OpenNebula resources were deleted (teardown)
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/bare_metal.yaml
+
+import:
+  - ../../../suites/bare_metal.yaml
+
+version: "1.0"
+
+commands:
+  bare_metal:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      # Create/update the OpenNebula host that stores NICo API/allocation settings.
+      - name: prepare_nico_host
+        phase: setup
+        command: "python3 ../scripts/bare_metal/prepare_nico_host.py"
+        args:
+          - "--name"
+          - "{{nico_host_name}}"
+        timeout: 120
+
+      # Create/update the VM template consumed by the nico VMM driver.
+      - name: prepare_nico_template
+        phase: setup
+        command: "python3 ../scripts/bare_metal/prepare_nico_template.py"
+        args:
+          - "--name"
+          - "{{nico_template_name}}"
+        timeout: 120
+
+      # Launch bare-metal GPU instance from an OpenNebula template (pyone)
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/bare_metal/launch_instance.py"
+        args:
+          - "--name"
+          - "{{nico_vm_name}}"
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+        timeout: 8400
+
+      # Prepare guest software required by GPU, container, NCCL, and training checks.
+      - name: prepare_guest_software
+        phase: setup
+        command: "python3 ../scripts/bare_metal/prepare_guest_software.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 9600
+
+      # List OpenNebula instances and verify this VM is visible.
+      - name: list_instances
+        phase: test
+        command: "python3 ../scripts/bare_metal/list_instances.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      # Verify user-defined tags on BM instance.
+      - name: verify_tags
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_tags.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 60
+
+      # Validate NICo machine placement metadata.
+      - name: topology_placement
+        phase: test
+        command: "python3 ../scripts/bare_metal/topology_placement.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      # Unimplemented: serial console output retrieval.
+      - name: serial_console
+        phase: test
+        skip: true
+        command: ""
+        args: []
+        timeout: 60
+
+      # Verify OS image installed on BM instance
+      - name: verify_image
+        phase: test
+        command: "python3 ../scripts/bare_metal/verify_image_installed.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 2100
+
+      # Verify template/host NICo configuration is internally consistent.
+      - name: verify_config
+        phase: test
+        command: "python3 ../scripts/bare_metal/verify_config.py"
+        args:
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
+        timeout: 120
+
+      # Unsupported by NICo: instances cannot be powered off.
+      - name: stop_instance
+        phase: test
+        skip: true
+        command: ""
+        args: []
+        timeout: 1800
+
+      # Unsupported by NICo: instances cannot be powered off and started later.
+      - name: start_instance
+        phase: test
+        skip: true
+        command: ""
+        args: []
+        timeout: 2700
+
+      # Reboot instance and validate recovery through NICo status.
+      - name: reboot_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/reboot_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 2100
+
+      # Unsupported by NICo: instances cannot be powered off and started later.
+      # Power-cycle validations below reuse reboot_instance as the closest
+      # supported recovery operation instead of triggering a second NICo reboot.
+      - name: power_cycle_instance
+        phase: test
+        skip: true
+        command: ""
+        args: []
+        timeout: 2100
+
+      # Describe instance state from OpenNebula and NICo.
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      # Sample host status logs over Teleport SSH.
+      - name: host_status_log
+        phase: test
+        command: "python3 ../scripts/bare_metal/host_status_log.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 300
+
+      # Unimplemented: reinstall instance from stock OS.
+      - name: reinstall_instance
+        phase: test
+        skip: true
+        command: ""
+        args: []
+        timeout: 3600
+
+      # Deploy NIM container via Teleport SSH.
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../scripts/bare_metal/deploy_nim.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 9600
+
+      # Teardown NIM container via Teleport SSH.
+      - name: teardown_nim
+        phase: teardown
+        command: "python3 ../scripts/bare_metal/teardown_nim.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      # Teardown bare-metal instance through OpenNebula/NICo.
+      # Set ONE_BM_SKIP_TEARDOWN=true to keep the instance alive.
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/bare_metal/teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
+          - "{{teardown_flag}}"
+        timeout: 600
+
+      # Post-teardown sanitization: verify instance terminated and resources deleted
+      - name: verify_teardown
+        phase: teardown
+        command: "python3 ../scripts/bare_metal/verify_teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--template-id"
+          - "{{steps.prepare_nico_template.template_id}}"
+          - "--host-id"
+          - "{{steps.prepare_nico_host.host_id}}"
+        timeout: 300
+
+tests:
+  cluster_name: "opennebula-bm-validation"
+  description: "OpenNebula Bare Metal (BMaaS) validation tests"
+
+  settings:
+    nico_vm_name: 'isv-bm-nico-vm'
+    nico_host_name: 'isv-bm-nico-host'
+    nico_template_name: 'isv-bm-nico-template'
+    teardown_flag: "{{(env.ONE_BM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  # Overrides only - all other validations inherited from ../bare_metal.yaml
+  validations:
+
+    # Skip CloudInitCheck. Reason:
+    #
+    # $ sudo cloud-init status
+    # status: disabled
+    cloud_init:
+      step: launch_instance
+      checks:
+        - StepSuccessCheck: {}
+
+    # guest_software:
+    #   step: prepare_guest_software
+    #   checks:
+    #     - StepSuccessCheck: {}
+
+    # ssh:
+    #   step: describe_instance
+    #   checks:
+    #     - StepSuccessCheck: {}
+
+    # Override expected_gpus
+    gpu:
+      step: describe_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 4
+
+    # Override expected_gpus
+    host_os:
+      step: describe_instance
+      checks:
+        PciBusCheck:
+          expected_gpus: 4
+
+    # Remove host/key_file
+    reboot_ssh:
+      step: reboot_instance
+      checks:
+        - ConnectivityCheck: {}
+        - OsCheck:
+            expected_os: "ubuntu"
+
+
+    reboot_gpu:
+      step: reboot_instance
+      checks:
+        - GpuCheck:
+            expected_gpus: 4
+
+    power_cycle_checks:
+      step: reboot_instance
+      checks:
+        - StepSuccessCheck: {}
+        - StableIdentifierCheck:
+            reference_id: "{{steps.launch_instance.instance_id}}"
+
+    power_cycle_state:
+      step: reboot_instance
+
+    power_cycle_ssh:
+      step: reboot_instance
+
+    power_cycle_gpu:
+      step: reboot_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 4
+
+    gpu_stress:
+      step: describe_instance
+      checks:
+        GpuStressCheck:
+          expected_gpus: 4
+
+    nccl:
+      step: describe_instance
+      checks:
+        NcclCheck:
+          expected_gpus: 4
+
+    training:
+      step: describe_instance
+      checks:
+        TrainingCheck:
+          expected_gpus: 4
+
+    # Start GPU.
+    start_gpu:
+      step: start_instance
+      checks:
+        - GpuCheck:
+            expected_gpus: 4
+
+    # NVLink.
+    nvlink:
+      step: describe_instance
+      checks:
+        NvlinkCheck:
+          expected_gpus: 4

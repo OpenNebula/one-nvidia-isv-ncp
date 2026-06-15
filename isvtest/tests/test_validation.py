@@ -2273,6 +2273,71 @@ class TestCloudInitCheckMetadataHeaders:
         assert "-H 'X-Other: value2'" in curl_cmds[0]
 
 
+class TestCloudInitCheckOpenNebulaContextualization:
+    """Tests for CloudInitCheck OpenNebula contextualization mode."""
+
+    def test_opennebula_contextualization_step_output_passes(self) -> None:
+        """OpenNebula mode keeps the canonical CloudInitCheck result name."""
+        from isvtest.validations.host import CloudInitCheck
+
+        v = CloudInitCheck(
+            config={
+                "mode": "opennebula_contextualization",
+                "step_output": {
+                    "success": True,
+                    "message": "OpenNebula contextualization verified using /run/one-context/one_env",
+                    "contextualization_completed": True,
+                    "context_source_found": True,
+                    "context_source": "/run/one-context/one_env",
+                    "required_context_keys_present": True,
+                    "context_keys_present": ["SSH_PUBLIC_KEY"],
+                    "context_keys_missing": [],
+                    "one_context_service_ok": True,
+                    "one_context_service": "state=active result=success status=0",
+                },
+            }
+        )
+
+        result = v.execute()
+
+        assert result["name"] == "CloudInitCheck"
+        assert result["passed"] is True
+        subtest_names = {subtest["name"] for subtest in result["subtests"]}
+        assert subtest_names == {
+            "contextualization",
+            "context_source",
+            "required_context_keys",
+            "one_context_service",
+        }
+
+    def test_opennebula_contextualization_missing_keys_fails(self) -> None:
+        """OpenNebula mode fails when contextualization evidence is incomplete."""
+        from isvtest.validations.host import CloudInitCheck
+
+        v = CloudInitCheck(
+            config={
+                "mode": "opennebula_contextualization",
+                "step_output": {
+                    "success": False,
+                    "error": "missing: SSH_PUBLIC_KEY",
+                    "contextualization_completed": False,
+                    "context_source_found": True,
+                    "required_context_keys_present": False,
+                    "context_keys_missing": ["SSH_PUBLIC_KEY"],
+                },
+            }
+        )
+
+        result = v.execute()
+
+        assert result["name"] == "CloudInitCheck"
+        assert result["passed"] is False
+        assert "contextualization" in result["error"]
+        missing_subtest = next(subtest for subtest in result["subtests"] if subtest["name"] == "required_context_keys")
+        assert missing_subtest["passed"] is False
+        assert "SSH_PUBLIC_KEY" in missing_subtest["message"]
+
+
 SAMPLE_APISERVER_METRICS = """\
 # HELP apiserver_request_total Counter of apiserver requests broken out for each verb, dry run value, group, version, resource, scope, component, and HTTP response code.
 # TYPE apiserver_request_total counter

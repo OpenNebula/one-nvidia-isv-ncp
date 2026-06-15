@@ -1,0 +1,127 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# AWS EKS Cluster Validation Configuration
+# Provisions an EKS GPU cluster using Terraform, then runs the canonical
+# Kubernetes validation suite (imported from ../k8s.yaml).
+#
+# Usage:
+#   # Provision cluster and run tests
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/eks.yaml
+#
+#   # Run tests only (skip setup/teardown)
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/eks.yaml --phase test
+#
+# Environment Variables:
+
+import: ../../../suites/k8s.yaml
+
+version: "1.0"
+
+commands:
+  kubernetes:
+    steps:
+      - name: setup
+        phase: setup
+        command: "../scripts/eks/setup.sh"
+        output_schema: cluster
+        timeout: 1800
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          K8S_CSI_BLOCK_SC: "longhorn"
+          K8S_CSI_SHARED_FS_SC: "longhorn"
+          K8S_CSI_NFS_SC: "longhorn"
+
+      - name: create_test_gpu_node_pool
+        phase: test
+        command: "../scripts/eks/create_node_pool.sh"
+        output_schema: node_pool
+        timeout: 900
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-gpu-pool"
+          NODE_TYPE: "gpu"
+          LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
+          TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+
+      - name: create_test_node_pool
+        phase: test
+        command: "../scripts/eks/create_node_pool.sh"
+        output_schema: node_pool
+        timeout: 900
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-cpu-pool"
+          NODE_TYPE: "cpu"
+          LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
+          TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+
+      - name: update_test_node_pool
+        phase: test
+        command: "../scripts/eks/update_node_pool.sh"
+        output_schema: node_pool
+        timeout: 900
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+          POOL_NAME: "isv-cpu-pool"
+          LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
+          TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+
+      - name: teardown
+        phase: teardown
+        command: "../scripts/eks/teardown.sh"
+        timeout: 1800
+        env:
+          ONE_CLUSTER_NAME: "isv-k8s-cluster"
+
+tests:
+  description: "OpenNebula Elastic Kubernetes Service GPU cluster validation"
+
+  validations:
+    k8s_storage:
+      checks:
+        K8sCsiStorageTypesCheck:
+          block_storage_class: "longhorn"
+          shared_fs_storage_class: "longhorn"
+          nfs_storage_class: "longhorn"
+          pvc_size: "1Gi"
+          bind_timeout_s: 120
+          namespace_prefix: "isvtest-csi-types"
+        K8sCsiStorageQuotaApiCheck:
+          storage_class: "longhorn"
+          total_quota: "10Gi"
+          per_sc_quota: "5Gi"
+          pvc_request: "1Gi"
+          over_quota_request: "100Gi"
+          bind_timeout_s: 120
+          quota_settle_s: 30
+          namespace_prefix: "isvtest-csi-quota"
+        K8sCsiProvisioningModesCheck:
+          dynamic_storage_class: "longhorn"
+          static_pv:
+            volume_handle: "static-test-vol"
+            csi_driver: "driver.longhorn.io"
+            fs_type: "ext4"
+            capacity: "1Gi"
+            access_mode: "ReadWriteOnce"
+          bind_timeout_s: 180
+          namespace_prefix: "isvtest-csi-prov"
+
+    k8s_network:
+      checks:
+        K8sApiNetworkAclCheck:
+          commands:
+            unauthorized_probe: "curl --max-time 3 -fsS https://192.0.2.1:6443/healthz"
+          probe_timeout_s: 10

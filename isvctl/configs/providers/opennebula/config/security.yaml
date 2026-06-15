@@ -1,0 +1,324 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Security Validation Configuration
+#
+# Wires the OpenNebula XML-RPC endpoint to the provider-neutral API endpoint
+# isolation contract. Audit logging checks require a readable local audit log
+# file and retention-days evidence.
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/security.yaml
+
+version: "1.0"
+
+commands:
+  security:
+    phases: ["test"]
+    steps:
+      - name: bmc_management_network
+        phase: test
+        command: "python3 ../scripts/security/bmc_not_implemented_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_management_network"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: bmc_tenant_isolation
+        phase: test
+        command: "python3 ../scripts/security/bmc_not_implemented_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_tenant_isolation"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: bmc_protocol_security
+        phase: test
+        command: "python3 ../scripts/security/bmc_not_implemented_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_protocol_security"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: bmc_bastion_access
+        phase: test
+        command: "python3 ../scripts/security/bmc_not_implemented_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_bastion_access"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: insecure_protocols_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "insecure_protocols_test"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: mfa_enforcement
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "mfa_enforcement"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: cert_rotation_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "cert_rotation_test"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: kms_encryption_options_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "kms_encryption_options_test"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: customer_managed_key_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "customer_managed_key_test"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: oidc_user_auth_test
+        phase: test
+        command: "python3 ../scripts/security/security_not_implemented_test.py"
+        args: ["--region", "{{region}}", "--aspect", "oidc_user_auth_test"]
+        continue_on_failure: true
+        timeout: 60
+
+      - name: tenant_isolation_test
+        phase: test
+        command: "python3 ../scripts/security/tenant_isolation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
+          - "--cluster-id"
+          - "{{cluster_id}}"
+        sensitive_args: ["--auth"]
+        continue_on_failure: true
+        timeout: 120
+
+      - name: least_privilege_test
+        phase: test
+        command: "python3 ../scripts/security/least_privilege_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--token-ttl-seconds"
+          - "{{service_account_token_ttl_seconds}}"
+          - "--allowed-source-cidr"
+          - "{{least_privilege_allowed_source_cidr}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
+        sensitive_args: ["--auth"]
+        continue_on_failure: true
+        timeout: 90
+
+      - name: sa_credential_test
+        phase: test
+        command: "python3 ../scripts/security/sa_credential_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--token-ttl-seconds"
+          - "{{service_account_token_ttl_seconds}}"
+        sensitive_args: ["--auth"]
+        continue_on_failure: true
+        timeout: 90
+
+      - name: api_endpoint_isolation
+        phase: test
+        command: "python3 ../scripts/security/api_endpoint_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+        timeout: 60
+
+      - name: audit_logging_test
+        phase: test
+        command: "python3 ../scripts/security/audit_logging_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--audit-log-path"
+          - "{{audit_log_path}}"
+          - "--logrotate-config-path"
+          - "{{logrotate_config_path}}"
+          - "--logrotate-main-config-path"
+          - "{{logrotate_main_config_path}}"
+          - "--poll-seconds"
+          - "{{audit_poll_seconds}}"
+          - "--xmlrpc-timeout-seconds"
+          - "{{audit_xmlrpc_timeout_seconds}}"
+        sensitive_args: ["--auth"]
+        continue_on_failure: true
+        timeout: 90
+
+      - name: short_lived_credentials_test
+        phase: test
+        command: "python3 ../scripts/security/short_lived_credentials_test.py"
+        skip: true
+        timeout: 60
+
+      - name: centralized_kms_test
+        phase: test
+        command: "python3 ../scripts/security/centralized_kms_not_implemented_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+        continue_on_failure: true
+        timeout: 60
+
+tests:
+  platform: security
+  cluster_name: "opennebula-security-validation"
+  description: "OpenNebula security validation"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
+    auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
+    datastore_id: "{{env.ONE_IMAGE_DATASTORE_ID | default('1')}}"
+    cluster_id: "{{env.ONE_CLUSTER_ID | default('-1')}}"
+    audit_log_path: "{{env.ONE_AUDIT_LOG_PATH | default('/var/log/one/oned.log')}}"
+    logrotate_config_path: "{{env.ONE_LOGROTATE_CONFIG_PATH | default('/etc/logrotate.d/opennebula')}}"
+    logrotate_main_config_path: "{{env.ONE_LOGROTATE_MAIN_CONFIG_PATH | default('/etc/logrotate.conf')}}"
+    audit_poll_seconds: "{{env.ONE_AUDIT_POLL_SECONDS | default('20')}}"
+    audit_xmlrpc_timeout_seconds: "{{env.ONE_AUDIT_XMLRPC_TIMEOUT_SECONDS | default('10')}}"
+    service_account_token_ttl_seconds: "{{env.ONE_SERVICE_ACCOUNT_TOKEN_TTL_SECONDS | default('-1')}}"
+    least_privilege_allowed_source_cidr: "{{env.ONE_LEAST_PRIVILEGE_ALLOWED_SOURCE_CIDR | default('not-validated-by-opennebula-xmlrpc')}}"
+
+  validations:
+    bmc_management_network:
+      checks:
+        BmcManagementNetworkCheck:
+          step: bmc_management_network
+
+    bmc_isolation:
+      checks:
+        BmcTenantIsolationCheck:
+          step: bmc_tenant_isolation
+
+    bmc_protocol_security:
+      checks:
+        BmcProtocolSecurityCheck:
+          step: bmc_protocol_security
+
+    bmc_bastion_access:
+      checks:
+        BmcBastionAccessCheck:
+          step: bmc_bastion_access
+
+    insecure_protocols:
+      checks:
+        InsecureProtocolsCheck:
+          step: insecure_protocols_test
+
+    mfa_enforcement:
+      checks:
+        MfaEnforcedCheck:
+          step: mfa_enforcement
+
+    cert_rotation:
+      checks:
+        CertRotationCycleCheck:
+          step: cert_rotation_test
+
+    kms_encryption_options:
+      checks:
+        KmsEncryptionOptionCheck:
+          step: kms_encryption_options_test
+
+    customer_managed_key:
+      checks:
+        CustomerManagedKeyCheck:
+          step: customer_managed_key_test
+
+    user_auth_oidc:
+      checks:
+        OidcUserAuthCheck:
+          step: oidc_user_auth_test
+
+    least_privilege_policy:
+      checks:
+        LeastPrivilegePolicyCheck:
+          step: least_privilege_test
+
+    minimal_role_enforcement:
+      checks:
+        MinimalRoleEnforcementCheck:
+          step: least_privilege_test
+
+    tenant_isolation:
+      checks:
+        TenantIsolationCheck:
+          step: tenant_isolation_test
+
+    service_account_auth:
+      checks:
+        ServiceAccountCredentialCheck:
+          step: sa_credential_test
+
+    api_security:
+      checks:
+        ApiEndpointIsolationCheck:
+          step: api_endpoint_isolation
+
+    audit_log_entry:
+      checks:
+        AuditLogEntryCheck:
+          step: audit_logging_test
+
+    audit_log_retention:
+      checks:
+        AuditLogRetentionCheck:
+          step: audit_logging_test
+
+    short_lived_credentials:
+      checks:
+        ShortLivedCredentialsCheck:
+          step: short_lived_credentials_test
+
+    centralized_kms:
+      checks:
+        CentralizedKmsCheck:
+          step: centralized_kms_test
+
+  exclude:
+    labels: []

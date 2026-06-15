@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+"""Tear down an OpenNebula virtual network."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from common.network import delete_vnet, get_one_server, get_value, vnet_exists  # noqa: E402
+
+VM_DONE_STATE = 6
+
+
+def terminate_vm(one: Any, vm_id: str | int, timeout: int = 180) -> None:
+    """Terminate a VM and wait until OpenNebula reports it done."""
+    one.vm.action("terminate-hard", int(vm_id))
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            vm_info = one.vm.info(int(vm_id))
+            if int(get_value(vm_info, "STATE", -1)) == VM_DONE_STATE:
+                return
+        except Exception:
+            return
+        time.sleep(5)
+
+
+def main() -> int:
+    """Delete the shared OpenNebula network created during setup."""
+    parser = argparse.ArgumentParser(description="Delete OpenNebula virtual network")
+    parser.add_argument("--vpc-id", "--network-id", dest="network_id", required=True, help="Virtual network ID")
+    parser.add_argument("--region", required=True, help="Logical region label")
+    parser.add_argument("--xmlrpc-url", required=True, help="OpenNebula XML-RPC endpoint")
+    parser.add_argument("--auth", required=True, help="OpenNebula auth token")
+    parser.add_argument("--dhcp-instance-id", default="", help="Optional DHCP probe VM ID to terminate")
+    parser.add_argument("--skip-destroy", action="store_true", help="Skip deletion")
+    args = parser.parse_args()
+
+    result: dict[str, Any] = {
+        "success": False,
+        "platform": "network",
+        "network_id": str(args.network_id),
+        "region": args.region,
+        "resources_deleted": [],
+        "resources_failed": [],
+    }
+
+    if args.skip_destroy:
+        result["success"] = True
+        result["message"] = "Skipped virtual network deletion"
+        print(json.dumps(result, indent=2))
+        return 0
+
+    try:
+        one = get_one_server(args.xmlrpc_url, args.auth)
+    except Exception as e:
+        result["error"] = str(e)
+        result["resources_failed"].append(f"vnet:{args.network_id}")
+        print(json.dumps(result, indent=2))
+        return 1
+
+    if args.dhcp_instance_id:
+        try:
+            terminate_vm(one, args.dhcp_instance_id)
+            result["resources_deleted"].append(f"vm:{args.dhcp_instance_id}")
+        except Exception as e:
+            result["resources_failed"].append(f"vm:{args.dhcp_instance_id}: {e}")
+
+    try:
+        if vnet_exists(one, args.network_id):
+            delete_vnet(one, args.network_id)
+            result["resources_deleted"].append(f"vnet:{args.network_id}")
+    except Exception as e:
+        result["resources_failed"].append(f"vnet:{args.network_id}: {e}")
+
+    result["success"] = not result["resources_failed"]
+    result["message"] = (
+        "OpenNebula network resources deleted"
+        if result["success"]
+        else "Some OpenNebula network resources failed to delete"
+    )
+
+    print(json.dumps(result, indent=2))
+    return 0 if result["success"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -41,11 +41,50 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def get_ssh_proxy_config(
+    config: dict[str, Any] | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Return generic SSH proxy and jumphost values from config, inventory, or env."""
+    config = config or {}
+    inventory = inventory or {}
+    step_output = config.get("step_output", {})
+    ssh_inv = inventory.get("ssh", {})
+
+    proxy = (
+        config.get("ssh_proxy")
+        or step_output.get("ssh_proxy")
+        or ssh_inv.get("proxy")
+        or os.environ.get("ISVTEST_SSH_PROXY")
+        or ""
+    )
+    jumphost = (
+        config.get("ssh_jumphost")
+        or step_output.get("ssh_jumphost")
+        or ssh_inv.get("jumphost")
+        or os.environ.get("ISVTEST_SSH_JUMPHOST")
+        or ""
+    )
+    return str(proxy), str(jumphost)
+
+
+def ssh_auth_available(
+    key_path: str | None,
+    config: dict[str, Any] | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> bool:
+    """Return true when SSH has either an explicit key or a configured proxy path."""
+    proxy, jumphost = get_ssh_proxy_config(config, inventory)
+    return bool(key_path) or bool(proxy and jumphost)
+
+
 def get_ssh_client(
     host: str,
     user: str,
-    key_path: str,
+    key_path: str | None,
     timeout: int = 30,
+    config: dict[str, Any] | None = None,
+    inventory: dict[str, Any] | None = None,
 ) -> paramiko.SSHClient:
     """Create SSH client connection using paramiko.
 
@@ -63,13 +102,20 @@ def get_ssh_client(
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+    proxy, jumphost = get_ssh_proxy_config(config, inventory)
+    sock = None
+    if proxy and jumphost:
+        proxy_command = f"tsh ssh --proxy={shlex.quote(proxy)} {shlex.quote(jumphost)} nc {shlex.quote(host)} 22"
+        sock = paramiko.ProxyCommand(proxy_command)
+
     ssh_client.connect(
         hostname=host,
         username=user,
-        key_filename=key_path,
+        key_filename=key_path or None,
         timeout=timeout,
-        allow_agent=False,
-        look_for_keys=False,
+        allow_agent=not bool(key_path),
+        look_for_keys=not bool(key_path),
+        sock=sock,
     )
     return ssh_client
 
@@ -274,6 +320,8 @@ def get_ssh_config(config: dict[str, Any], inventory: dict[str, Any]) -> dict[st
         "ssh_host": host,
         "ssh_user": user,
         "ssh_key_path": key_path,
+        "ssh_proxy": get_ssh_proxy_config(config, inventory)[0],
+        "ssh_jumphost": get_ssh_proxy_config(config, inventory)[1],
         # Optional metadata
         "gpu_count": config.get("expected_gpus") or vmaas_inv.get("gpu_count") or ssh_inv.get("gpu_count") or 0,
         "gpu_name": vmaas_inv.get("gpu_name") or ssh_inv.get("gpu_name"),

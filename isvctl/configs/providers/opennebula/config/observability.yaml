@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Observability Validation Configuration
+#
+# Uses local/provider log evidence for host syslog checks. VPC flow logs, BMC
+# SEL, and GPU telemetry are wired as explicit failures until real OpenNebula
+# provider evidence is implemented.
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/observability.yaml
+
+import:
+  - ../../../suites/observability.yaml
+
+version: "1.0"
+
+commands:
+  observability:
+    phases: ["test"]
+    steps:
+      - name: vpc_flow_logs
+        phase: test
+        command: "python3 ../scripts/observability/log_availability_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--network-id"
+          - "{{network_id}}"
+          - "--aspect"
+          - "vpc_flow_logs"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: host_syslogs
+        phase: test
+        command: "python3 ../scripts/observability/log_availability_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "host_syslogs"
+          - "--host-log-path"
+          - "{{observability_log_path}}"
+          - "--max-age-minutes"
+          - "{{host_syslog_max_age_minutes}}"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: bmc_sel_logs
+        phase: test
+        command: "python3 ../scripts/observability/log_availability_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_sel_logs"
+        continue_on_failure: true
+        timeout: 60
+
+      - name: bmc_gpu_telemetry
+        phase: test
+        command: "python3 ../scripts/observability/log_availability_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--aspect"
+          - "bmc_gpu_telemetry"
+        continue_on_failure: true
+        timeout: 60
+
+tests:
+  platform: observability
+  cluster_name: "opennebula-observability-validation"
+  description: "OpenNebula observability validation"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    network_id: "{{env.ONE_NETWORK_ID | default('opennebula-virtual-network')}}"
+    observability_log_path: "{{env.ONE_OBSERVABILITY_LOG_PATH | default('/var/log/one/oned.log')}}"
+    host_syslog_max_age_minutes: "{{env.ONE_HOST_SYSLOG_MAX_AGE_MINUTES | default('1440')}}"

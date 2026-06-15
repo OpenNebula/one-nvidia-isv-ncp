@@ -17,11 +17,15 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,6 +34,26 @@ from .conftest import load_vm_script
 
 ISVCTL_ROOT = Path(__file__).resolve().parents[1]
 MY_ISV_VM_SCRIPTS = ISVCTL_ROOT / "configs" / "providers" / "my-isv" / "scripts" / "vm"
+OPENNEBULA_VM_SCRIPTS = ISVCTL_ROOT / "configs" / "providers" / "opennebula" / "scripts" / "vm"
+
+
+def load_opennebula_vm_script(script_name: str) -> ModuleType:
+    """Load an OpenNebula VM script with a fake pyone module for helper tests."""
+    script_path = OPENNEBULA_VM_SCRIPTS / script_name
+    spec = importlib.util.spec_from_file_location(f"test_opennebula_{script_path.stem}", script_path)
+    assert spec and spec.loader
+
+    inserted_pyone = "pyone" not in sys.modules
+    if inserted_pyone:
+        sys.modules["pyone"] = SimpleNamespace()
+
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if inserted_pyone:
+            sys.modules.pop("pyone", None)
 
 
 def test_aws_launch_contract_records_matching_requested_and_actual_key() -> None:
@@ -230,3 +254,35 @@ def test_my_isv_vm_demo_launch_emits_specified_key_contract() -> None:
     assert result["requested_key_name"] == "isv-test-gpu"
     assert result["key_name"] == "isv-test-gpu"
     assert result["tests"]["specified_key"]["passed"] is True
+
+
+def test_opennebula_launch_contract_compares_user_and_context_ssh_public_keys() -> None:
+    """OpenNebula specified-key evidence compares user and VM-resolved SSH keys."""
+    module = load_opennebula_vm_script("launch_instance.py")
+    key_blob = b"fake-opennebula-key"
+    public_key = f"ssh-ed25519 {base64.b64encode(key_blob).decode()} oneadmin@demo-host"
+    expected_fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode().rstrip("=")
+
+    assert module.normalize_public_key(public_key) == public_key.rsplit(" ", 1)[0]
+    assert module.public_key_fingerprint(module.normalize_public_key(public_key)) == expected_fingerprint
+    assert module.public_key_fingerprints(public_key) == [expected_fingerprint]
+
+    class _FakeUserApi:
+        def info(self, uid: int) -> dict[str, Any]:
+            assert uid == 0
+            return {"TEMPLATE": {"SSH_PUBLIC_KEY": public_key}}
+
+    fake_one = SimpleNamespace(user=_FakeUserApi())
+    assert module.get_user_ssh_public_key(fake_one, SimpleNamespace(UID=0)) == public_key
+
+    result: dict[str, Any] = {"success": True, "platform": "vm", "instance_id": "241"}
+    module.add_specified_key_contract(
+        result,
+        requested_key_names=[expected_fingerprint],
+        observed_key_names=[expected_fingerprint],
+    )
+
+    assert result["requested_key_name"] == expected_fingerprint
+    assert result["key_name"] == expected_fingerprint
+    assert result["tests"]["specified_key"]["passed"] is True
+    assert result["tests"]["specified_key"]["probes"] == ["user_ssh_public_key", "context_ssh_public_key"]

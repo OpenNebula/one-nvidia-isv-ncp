@@ -1,0 +1,210 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula VM Validation Configuration
+#
+# Imports validations from the provider-agnostic VM canonical config.
+#
+# Steps:
+#   1. launch_instance - pyone: Provisions VM from template, outputs IP
+#   2. list_instances - pyone: Checks if VM exists
+#   3. verify_tags - pyone: Verifies USER_TEMPLATE tags
+#   4. contextualization_check - SSH: Verifies OpenNebula CONTEXT in guest
+#   5. virtual_device_hardening - SSH: Checks guest virtual-device signals
+#   6. stop_instance - pyone: Powers off VM
+#   7. start_instance - pyone: Resumes VM
+#   8. reboot_instance - pyone: Reboots VM
+#   9. describe_instance - pyone: Describes current state, passes SSH info
+#   10. nvidia_registry_preflight - paramiko: Logs in to NGC, checks CUDA probe tag
+#   11. deploy_nim - paramiko: Deploys NIM container via SSH
+#   12. teardown_nim - paramiko: Stops NIM container via SSH
+#   13. teardown - pyone: Terminates VM
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/vm.yaml
+
+import:
+  - ../../../suites/vm.yaml
+
+version: "1.0"
+
+commands:
+  vm:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/vm/launch_instance.py"
+        args:
+          - "--name"
+          - "isv-test-gpu"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+        timeout: 600
+
+      - name: list_instances
+        phase: test
+        command: "python3 ../scripts/vm/list_instances.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 120
+
+      - name: verify_tags
+        phase: test
+        command: "python3 ../scripts/vm/describe_tags.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 60
+
+      - name: contextualization_check
+        phase: test
+        command: "python3 ../scripts/vm/contextualization_check.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--public-ip"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--required-key"
+          - "SSH_PUBLIC_KEY"
+        timeout: 120
+        output_schema: generic
+
+      - name: virtual_device_hardening
+        phase: test
+        command: "python3 ../scripts/vm/virtual_device_hardening.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--public-ip"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+        timeout: 120
+
+      - name: stop_instance
+        phase: test
+        command: "python3 ../scripts/vm/stop_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+        timeout: 600
+
+      - name: start_instance
+        phase: test
+        command: "python3 ../scripts/vm/start_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--public-ip"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+        timeout: 300
+
+      - name: reboot_instance
+        phase: test
+        command: "python3 ../scripts/vm/reboot_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--public-ip"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+        timeout: 600
+
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/vm/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--public-ip"
+          - "{{steps.reboot_instance.public_ip}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+        timeout: 120
+
+      - name: nvidia_registry_preflight
+        phase: test
+        command: "python3 ../scripts/vm/nvidia_registry_preflight.py"
+        args:
+          - "--host"
+          - "{{steps.describe_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.describe_instance.key_file}}"
+          - "--user"
+          - "{{ssh_user}}"
+          - "--image"
+          - "{{cuda_probe_image}}"
+        timeout: 300
+        output_schema: generic
+
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../../shared/deploy_nim.py"
+        args:
+          - "--host"
+          - "{{steps.reboot_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.reboot_instance.key_file}}"
+          - "--user"
+          - "{{ssh_user}}"
+        timeout: 1800
+
+      - name: teardown_nim
+        phase: teardown
+        command: "python3 ../../shared/teardown_nim.py"
+        args:
+          - "--host"
+          - "{{steps.reboot_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.reboot_instance.key_file}}"
+          - "--user"
+          - "{{ssh_user}}"
+        timeout: 120
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/vm/teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "{{teardown_flag}}"
+        timeout: 600
+
+tests:
+  cluster_name: "opennebula-vm-validation"
+  description: "OpenNebula VM validation tests"
+
+  settings:
+    template_id: "{{env.ONE_VM_TEMPLATE_ID | default('0')}}"  # Read from env var, default to 0
+    key_file: "{{env.ONE_VM_KEY_FILE}}" # Needs to be exported manually during testing
+    ssh_user: "root"  # OpenNebula template uses root for SSH access
+    cuda_probe_image: "nvcr.io/nvidia/cuda:13.0.0-base-ubuntu24.04"
+    teardown_flag: "{{(env.ONE_VM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  validations:
+    cloud_init:
+      step: contextualization_check
+      checks:
+        CloudInitCheck:
+          mode: "opennebula_contextualization"
