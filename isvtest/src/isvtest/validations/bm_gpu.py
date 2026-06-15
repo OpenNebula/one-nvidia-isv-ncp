@@ -19,6 +19,7 @@ from typing import ClassVar
 
 from isvtest.core.nvidia import GpuQueryResult, parse_gpu_names_csv, parse_gpu_query_csv
 from isvtest.core.validation import BaseValidation
+from isvtest.validations.bm_driver import run_guest_or_local_command
 
 
 class BmGpuDetection(BaseValidation):
@@ -30,13 +31,15 @@ class BmGpuDetection(BaseValidation):
 
     def run(self) -> None:
         """Query nvidia-smi and verify at least one GPU is detected."""
-        result = self.run_command("nvidia-smi --query-gpu=name --format=csv,noheader")
+        exit_code, stdout, stderr = run_guest_or_local_command(
+            self, "nvidia-smi --query-gpu=name --format=csv,noheader"
+        )
 
-        if result.exit_code != 0:
-            self.set_failed(f"Failed to query GPUs: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"Failed to query GPUs: {stderr}")
             return
 
-        gpus = parse_gpu_names_csv(result.stdout)
+        gpus = parse_gpu_names_csv(stdout)
         if not gpus:
             self.set_failed("No GPUs detected")
             return
@@ -66,13 +69,15 @@ class BmGpuHealth(BaseValidation):
 
     def run(self) -> None:
         """Query GPU health metrics and validate temperature/utilization values."""
-        result = self.run_command("nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu --format=csv,noheader")
+        exit_code, stdout, stderr = run_guest_or_local_command(
+            self, "nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu --format=csv,noheader"
+        )
 
-        if result.exit_code != 0:
-            self.set_failed(f"Failed to query GPU health: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"Failed to query GPU health: {stderr}")
             return
 
-        query_result = parse_gpu_query_csv(result.stdout, ["name", "temperature", "utilization"], report_malformed=True)
+        query_result = parse_gpu_query_csv(stdout, ["name", "temperature", "utilization"], report_malformed=True)
         assert isinstance(query_result, GpuQueryResult)  # Type narrowing for mypy
 
         if not query_result.gpus and not query_result.malformed_lines:
@@ -130,13 +135,15 @@ class BmGpuComputeCapability(BaseValidation):
 
     def run(self) -> None:
         """Query and validate GPU compute capability format."""
-        result = self.run_command("nvidia-smi --query-gpu=compute_cap --format=csv,noheader")
+        exit_code, stdout, stderr = run_guest_or_local_command(
+            self, "nvidia-smi --query-gpu=compute_cap --format=csv,noheader"
+        )
 
-        if result.exit_code != 0:
-            self.set_failed(f"Failed to query compute capability: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"Failed to query compute capability: {stderr}")
             return
 
-        compute_cap = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+        compute_cap = stdout.strip().split("\n")[0] if stdout.strip() else ""
         if not compute_cap:
             self.set_failed("GPU compute capability not available")
             return

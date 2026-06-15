@@ -143,7 +143,7 @@ def parse_cuda_version(output: str) -> str | None:
     Note: This is the maximum CUDA version supported by the driver,
     not necessarily the installed CUDA toolkit version.
     """
-    match = re.search(r"CUDA Version:\s+(\d+\.\d+)", output)
+    match = re.search(r"CUDA (?:UMD )?Version:\s+(\d+\.\d+)", output)
     if match:
         return match.group(1)
     return None

@@ -2276,6 +2276,15 @@ class TestCloudInitCheckOpenNebulaContextualization:
         assert "SSH_PUBLIC_KEY" in missing_subtest["message"]
 
 
+def test_parse_cuda_version_accepts_cuda_umd_version() -> None:
+    """Newer nvidia-smi reports CUDA UMD Version instead of CUDA Version."""
+    from isvtest.core.nvidia import parse_cuda_version
+
+    output = "| NVIDIA-SMI 610.43.02  KMD Version: 610.43.02  CUDA UMD Version: 13.3 |"
+
+    assert parse_cuda_version(output) == "13.3"
+
+
 SAMPLE_APISERVER_METRICS = """\
 # HELP apiserver_request_total Counter of apiserver requests broken out for each verb, dry run value, group, version, resource, scope, component, and HTTP response code.
 # TYPE apiserver_request_total counter

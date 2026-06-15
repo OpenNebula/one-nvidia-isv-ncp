@@ -17,8 +17,37 @@
 
 from typing import ClassVar
 
+import pytest
+
 from isvtest.core.nvidia import compare_versions, parse_driver_version
+from isvtest.core.ssh import get_ssh_client, get_ssh_config, run_ssh_command, ssh_auth_available
 from isvtest.core.validation import BaseValidation
+
+
+def run_guest_or_local_command(validation: BaseValidation, command: str) -> tuple[int, str, str]:
+    """Run a BM command over SSH when host inventory exists, otherwise locally."""
+    inventory = validation.config.get("inventory", {})
+    ssh_cfg = get_ssh_config(validation.config, inventory)
+    host = ssh_cfg["ssh_host"]
+    key_path = ssh_cfg["ssh_key_path"]
+
+    if host and ssh_auth_available(key_path, validation.config, inventory):
+        ssh = get_ssh_client(
+            host,
+            ssh_cfg["ssh_user"],
+            key_path,
+            config=validation.config,
+            inventory=inventory,
+        )
+        try:
+            return run_ssh_command(ssh, command, timeout=validation.timeout)
+        finally:
+            ssh.close()
+
+    result = validation.run_command(command)
+    if result.exit_code != 0 and "nvidia-smi" in command and "not found" in result.stderr.lower():
+        pytest.skip("nvidia-smi not available on local runner")
+    return result.exit_code, result.stdout, result.stderr
 
 
 class BmDriverInstalled(BaseValidation):
@@ -29,10 +58,10 @@ class BmDriverInstalled(BaseValidation):
     labels: ClassVar[tuple[str, ...]] = ("bare_metal",)
 
     def run(self) -> None:
-        result = self.run_command("nvidia-smi")
+        exit_code, _stdout, stderr = run_guest_or_local_command(self, "nvidia-smi")
 
-        if result.exit_code != 0:
-            self.set_failed(f"nvidia-smi failed: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"nvidia-smi failed: {stderr}")
             return
 
         self.set_passed("NVIDIA driver is installed and working")
@@ -46,14 +75,16 @@ class BmDriverVersion(BaseValidation):
     labels: ClassVar[tuple[str, ...]] = ("bare_metal",)
 
     def run(self) -> None:
-        result = self.run_command("nvidia-smi --query-gpu=driver_version --format=csv,noheader")
+        exit_code, stdout, stderr = run_guest_or_local_command(
+            self, "nvidia-smi --query-gpu=driver_version --format=csv,noheader"
+        )
 
-        if result.exit_code != 0:
-            self.set_failed(f"Failed to query driver version: {result.stderr}")
+        if exit_code != 0:
+            self.set_failed(f"Failed to query driver version: {stderr}")
             return
 
         # Parse driver version using shared parser
-        version = parse_driver_version(result.stdout)
+        version = parse_driver_version(stdout)
         if not version:
             self.set_failed("Driver version is empty or invalid")
             return
