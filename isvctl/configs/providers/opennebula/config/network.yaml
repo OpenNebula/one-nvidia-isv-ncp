@@ -1,0 +1,696 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Network Validation Configuration
+#
+# Imports the provider-agnostic network validation suite and wires the initial
+# network checks to OpenNebula VXLAN virtual-network scripts:
+#   1. VPC CRUD
+#   2. Subnet configuration
+#   3. VPC isolation
+#   4a. Security group CRUD
+#   4b. Security blocking
+#   4c. Security policy propagation timing
+#   4d. Security group workload scoping
+#   4e. Security group node scoping
+#   4f. Security group subnet scoping
+#   4g. Security group service scoping
+#   4h. Security group port policy
+#   5. Connectivity
+#   6. Traffic validation
+#   7. VPC IP configuration
+#   8. DHCP/IP management
+#   9. SDN latency/performance telemetry
+#   10. Stable private IP
+#   11. Stable egress IP
+#   12. Floating IP alias switch
+#   13. VPC peering through an OpenNebula Virtual Router
+#
+# Other network checks are intentionally excluded until their OpenNebula scripts
+# are implemented.
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/network.yaml
+
+import:
+  - ../../../suites/network.yaml
+
+version: "1.0"
+
+commands:
+  network:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: create_network
+        phase: setup
+        command: "python3 ../scripts/network/create_vpc.py"
+        args:
+          - "--name"
+          - "isv-shared-vnet"
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "{{network_cidr}}"
+          - "--subnet-count"
+          - "{{network_subnet_count}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+          - "--ar-ip"
+          - "{{network_ar_ip}}"
+          - "--ar-size"
+          - "{{network_ar_size}}"
+          - "--guest-mtu"
+          - "{{network_guest_mtu}}"
+          - "--ip-link-conf"
+          - "{{network_ip_link_conf}}"
+          - "--filter-ip-spoofing"
+          - "{{network_filter_ip_spoofing}}"
+          - "--filter-mac-spoofing"
+          - "{{network_filter_mac_spoofing}}"
+          - "--bridge-type"
+          - "{{network_bridge_type}}"
+        timeout: 300
+
+      # Test 1: VPC CRUD operations using an OpenNebula VXLAN virtual network.
+      - name: vpc_crud
+        phase: test
+        command: "python3 ../scripts/network/vpc_crud_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.99.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: vpc_crud
+
+      # Test 2: Subnet configuration using OpenNebula address ranges.
+      - name: subnet_config
+        phase: test
+        command: "python3 ../scripts/network/subnet_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.98.0.0/16"
+          - "--subnet-count"
+          - "4"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: subnet_config
+
+      # Test 3: VPC isolation between two separate VXLAN virtual networks.
+      - name: vpc_isolation
+        phase: test
+        command: "python3 ../scripts/network/isolation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr-a"
+          - "10.97.0.0/16"
+          - "--cidr-b"
+          - "10.96.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: vpc_isolation
+
+      # Test 4a: Security group CRUD operations.
+      - name: sg_crud
+        phase: test
+        command: "python3 ../scripts/network/sg_crud_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.95.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: sg_crud
+
+      # Test 4b: Security blocking policy checks.
+      - name: security_blocking
+        phase: test
+        command: "python3 ../scripts/network/security_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "10.94.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+        output_schema: security_blocking
+
+      # Test 4c: Security policy propagation timing.
+      - name: sg_policy_propagation
+        phase: test
+        command: "python3 ../scripts/network/sg_policy_propagation_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--max-propagation-seconds"
+          - "10"
+        timeout: 120
+
+      # Test 4d: Security group scoping at workload VM/NIC level.
+      - name: sg_workload_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "workload"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
+      # Test 4e: Security group scoping at VM/node NIC level.
+      - name: sg_node_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "node"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
+      # Test 4f: Security group scoping at address-range/subnet level.
+      - name: sg_subnet_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "subnet"
+          - "--cidr"
+          - "10.85.0.0/16"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+        timeout: 120
+
+      # Test 4g: Security group scoping at service endpoint VM/NIC level.
+      - name: sg_service_scoping
+        phase: test
+        command: "python3 ../scripts/network/sg_scoping_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--scope"
+          - "service"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
+      # Test 4h: Custom port security policy on one VM NIC.
+      - name: sg_port_security_policy
+        phase: test
+        command: "python3 ../scripts/network/sg_port_security_policy.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--nic-id"
+          - "0"
+          - "--allowed-port"
+          - "{{port_policy_allowed_port}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+        timeout: 900
+
+      # Test 5: VM connectivity across the shared validation virtual network.
+      - name: connectivity_test
+        phase: test
+        command: "python3 ../scripts/network/test_connectivity.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--vnet-id"
+          - "{{steps.create_network.network_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+        timeout: 900
+        output_schema: connectivity_result
+
+      # Test 6: Real traffic flow across allowed, blocked, and internet paths.
+      - name: traffic_validation
+        phase: test
+        command: "python3 ../scripts/network/traffic_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr"
+          - "{{traffic_cidr}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+          - "--ar-ip"
+          - "{{traffic_ar_ip}}"
+          - "--ar-size"
+          - "{{traffic_ar_size}}"
+          - "--guest-mtu"
+          - "{{traffic_guest_mtu}}"
+          - "--ip-link-conf"
+          - "{{traffic_ip_link_conf}}"
+          - "--filter-ip-spoofing"
+          - "{{traffic_filter_ip_spoofing}}"
+          - "--filter-mac-spoofing"
+          - "{{traffic_filter_mac_spoofing}}"
+          - "--bridge-type"
+          - "{{traffic_bridge_type}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+        timeout: 900
+        output_schema: traffic_flow
+
+      # Test 7: DNS/search-domain network-context rendering on the NAT network.
+      - name: vpc_ip_config
+        phase: test
+        command: "python3 ../scripts/network/vpc_ip_config_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--cidr"
+          - "{{vpc_ip_cidr}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+          - "--network-nic-id"
+          - "{{vpc_ip_nic_id}}"
+          - "--expected-dns"
+          - "{{vpc_ip_dns}}"
+          - "--expected-search-domain"
+          - "{{vpc_ip_search_domain}}"
+          - "--available-ips"
+          - "{{vpc_ip_available_ips}}"
+        timeout: 900
+        output_schema: vpc_ip_config
+
+      # Test 8: DHCP lease/IP/DNS checks on the private NAT network.
+      - name: dhcp_ip_test
+        phase: test
+        command: "python3 ../scripts/network/dhcp_ip_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+          - "--private-nic-id"
+          - "{{dhcp_ip_private_nic_id}}"
+        timeout: 900
+        output_schema: dhcp_ip
+
+      # Test 9: SDN latency/performance evidence from OpenNebula VM.MONITORING.
+      - name: sdn_latency_perf_logging
+        phase: test
+        command: "python3 ../scripts/network/sdn_logging_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--vm-id"
+          - "{{steps.dhcp_ip_test.instance_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--aspect"
+          - "latency_perf"
+          - "--sample-window-seconds"
+          - "{{sdn_perf_sample_window_seconds}}"
+          - "--monitoring-wait-timeout"
+          - "{{sdn_perf_monitoring_wait_timeout}}"
+          - "--poll-interval-seconds"
+          - "{{sdn_perf_poll_interval_seconds}}"
+        timeout: 420
+
+      # Test 10: Private NIC IP stability across VM poweroff/resume.
+      - name: stable_ip_test
+        phase: test
+        command: "python3 ../scripts/network/stable_ip_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--private-nic-id"
+          - "{{stable_ip_private_nic_id}}"
+        timeout: 900
+        output_schema: stable_ip
+
+      # Test 11: Stable egress IP using the DHCP/IP validation VM.
+      - name: stable_egress_ip_test
+        phase: test
+        command: "python3 ../scripts/network/stable_egress_ip_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--instance-id"
+          - "{{steps.dhcp_ip_test.instance_id}}"
+          - "--ssh-host"
+          - "{{steps.dhcp_ip_test.public_ip}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--endpoint"
+          - "{{stable_egress_endpoint}}"
+          - "--probes"
+          - "{{stable_egress_probes}}"
+          - "--min-successful-probes"
+          - "{{stable_egress_min_successful_probes}}"
+          - "--interval-seconds"
+          - "{{stable_egress_interval_seconds}}"
+        timeout: 600
+        output_schema: stable_egress_ip
+
+      # Test 12: Floating IP represented by an OpenNebula NIC alias.
+      - name: floating_ip_test
+        phase: test
+        command: "python3 ../scripts/network/floating_ip_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--floating-ip"
+          - "{{floating_ip_address}}"
+          - "--floating-network-id"
+          - "{{floating_ip_network_id}}"
+          - "--max-switch-seconds"
+          - "{{floating_ip_max_switch_seconds}}"
+        timeout: 900
+        output_schema: floating_ip
+
+      # Test 13: VPC peering through an OpenNebula Virtual Router.
+      - name: peering_test
+        phase: test
+        command: "python3 ../scripts/network/peering_test.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--cidr-a"
+          - "{{peering_cidr_a}}"
+          - "--cidr-b"
+          - "{{peering_cidr_b}}"
+          - "--gateway-a"
+          - "{{peering_gateway_a}}"
+          - "--gateway-b"
+          - "{{peering_gateway_b}}"
+          - "--template-id"
+          - "{{template_id}}"
+          - "--vrouter-template-id"
+          - "{{vrouter_template_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--phydev"
+          - "{{phydev}}"
+          - "--security-groups"
+          - "{{security_groups}}"
+          - "--vn-mad"
+          - "{{vn_mad}}"
+          - "--vxlan-mode"
+          - "{{vxlan_mode}}"
+          - "--guest-mtu"
+          - "{{network_guest_mtu}}"
+          - "--ip-link-conf"
+          - "{{network_ip_link_conf}}"
+          - "--filter-ip-spoofing"
+          - "{{network_filter_ip_spoofing}}"
+          - "--filter-mac-spoofing"
+          - "{{network_filter_mac_spoofing}}"
+          - "--bridge-type"
+          - "{{network_bridge_type}}"
+          - "--key-file"
+          - "{{key_file}}"
+          - "--ssh-user"
+          - "{{ssh_user}}"
+          - "--ssh-nic-id"
+          - "{{ssh_nic_id}}"
+        timeout: 900
+        output_schema: vpc_peering
+
+      # Remaining tests are excluded below until their OpenNebula scripts exist:
+      # SDN hardware/audit logging, BYOIP, DNS, and fabric topology checks.
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/network/teardown.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--dhcp-instance-id"
+          - "{{steps.dhcp_ip_test.instance_id}}"
+          - "{{teardown_flag}}"
+        timeout: 300
+        output_schema: teardown
+
+tests:
+  cluster_name: "opennebula-network-validation"
+  description: "OpenNebula VXLAN network validation tests"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
+    auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
+    phydev: "{{env.ONE_VNET_PHYDEV | default('enP6p3s0np0')}}"
+    security_groups: "{{env.ONE_VNET_SECURITY_GROUPS | default('0')}}"
+    network_cidr: "{{env.ONE_NETWORK_CIDR | default('172.20.0.0/24')}}"
+    network_subnet_count: "{{env.ONE_NETWORK_SUBNET_COUNT | default('1')}}"
+    network_ar_ip: "{{env.ONE_NETWORK_AR_IP | default('172.20.0.10')}}"
+    network_ar_size: "{{env.ONE_NETWORK_AR_SIZE | default('40')}}"
+    network_guest_mtu: "{{env.ONE_NETWORK_GUEST_MTU | default('1450')}}"
+    network_ip_link_conf: "{{env.ONE_NETWORK_IP_LINK_CONF | default('nolearning=')}}"
+    network_filter_ip_spoofing: "{{env.ONE_NETWORK_FILTER_IP_SPOOFING | default('NO')}}"
+    network_filter_mac_spoofing: "{{env.ONE_NETWORK_FILTER_MAC_SPOOFING | default('NO')}}"
+    network_bridge_type: "{{env.ONE_NETWORK_BRIDGE_TYPE | default('linux')}}"
+    traffic_cidr: "{{env.ONE_NETWORK_TRAFFIC_CIDR | default('172.20.0.0/24')}}"
+    traffic_ar_ip: "{{env.ONE_NETWORK_TRAFFIC_AR_IP | default('172.20.0.10')}}"
+    traffic_ar_size: "{{env.ONE_NETWORK_TRAFFIC_AR_SIZE | default('40')}}"
+    traffic_guest_mtu: "{{env.ONE_NETWORK_TRAFFIC_GUEST_MTU | default('1450')}}"
+    traffic_ip_link_conf: "{{env.ONE_NETWORK_TRAFFIC_IP_LINK_CONF | default('nolearning=')}}"
+    traffic_filter_ip_spoofing: "{{env.ONE_NETWORK_TRAFFIC_FILTER_IP_SPOOFING | default('NO')}}"
+    traffic_filter_mac_spoofing: "{{env.ONE_NETWORK_TRAFFIC_FILTER_MAC_SPOOFING | default('NO')}}"
+    traffic_bridge_type: "{{env.ONE_NETWORK_TRAFFIC_BRIDGE_TYPE | default('linux')}}"
+    vpc_ip_cidr: "{{env.ONE_NETWORK_VPC_IP_CIDR | default('172.20.0.0/24')}}"
+    vpc_ip_nic_id: "{{env.ONE_NETWORK_VPC_IP_NIC_ID | default('1')}}"
+    vpc_ip_dns: "{{env.ONE_NETWORK_VPC_IP_DNS | default('8.8.8.8')}}"
+    vpc_ip_search_domain: "{{env.ONE_NETWORK_VPC_IP_SEARCH_DOMAIN | default('opennebula.io')}}"
+    vpc_ip_available_ips: "{{env.ONE_NETWORK_VPC_IP_AVAILABLE_IPS | default('16')}}"
+    dhcp_ip_private_nic_id: "{{env.ONE_NETWORK_DHCP_IP_PRIVATE_NIC_ID | default('1')}}"
+    sdn_perf_sample_window_seconds: "{{env.ONE_NETWORK_SDN_PERF_SAMPLE_WINDOW_SECONDS | default('900')}}"
+    sdn_perf_monitoring_wait_timeout: "{{env.ONE_NETWORK_SDN_PERF_MONITORING_WAIT_TIMEOUT | default('300')}}"
+    sdn_perf_poll_interval_seconds: "{{env.ONE_NETWORK_SDN_PERF_POLL_INTERVAL_SECONDS | default('10')}}"
+    port_policy_allowed_port: "{{env.ONE_NETWORK_PORT_POLICY_ALLOWED_PORT | default('8443')}}"
+    stable_ip_private_nic_id: "{{env.ONE_NETWORK_STABLE_IP_PRIVATE_NIC_ID | default('1')}}"
+    stable_egress_endpoint: "{{env.ONE_NETWORK_STABLE_EGRESS_ENDPOINT | default('https://api.ipify.org')}}"
+    stable_egress_probes: "{{env.ONE_NETWORK_STABLE_EGRESS_PROBES | default('10')}}"
+    stable_egress_min_successful_probes: "{{env.ONE_NETWORK_STABLE_EGRESS_MIN_SUCCESSFUL_PROBES | default('1')}}"
+    stable_egress_interval_seconds: "{{env.ONE_NETWORK_STABLE_EGRESS_INTERVAL_SECONDS | default('2')}}"
+    floating_ip_address: "{{env.ONE_NETWORK_FLOATING_IP_ADDRESS | default('192.168.150.147')}}"
+    floating_ip_network_id: "{{env.ONE_NETWORK_FLOATING_IP_NETWORK_ID | default('0')}}"
+    floating_ip_max_switch_seconds: "{{env.ONE_NETWORK_FLOATING_IP_MAX_SWITCH_SECONDS | default('30')}}"
+    peering_cidr_a: "{{env.ONE_NETWORK_PEERING_CIDR_A | default('172.20.1.0/24')}}"
+    peering_cidr_b: "{{env.ONE_NETWORK_PEERING_CIDR_B | default('172.20.2.0/24')}}"
+    peering_gateway_a: "{{env.ONE_NETWORK_PEERING_GATEWAY_A | default('172.20.1.1')}}"
+    peering_gateway_b: "{{env.ONE_NETWORK_PEERING_GATEWAY_B | default('172.20.2.1')}}"
+    vn_mad: "{{env.ONE_VNET_MAD | default('vxlan')}}"
+    vxlan_mode: "{{env.ONE_VNET_VXLAN_MODE | default('evpn')}}"
+    template_id: "{{env.ONE_NETWORK_BASE_TEMPLATE_ID | default('3')}}"
+    vrouter_template_id: "{{env.ONE_NETWORK_VROUTER_TEMPLATE_ID}}"
+    key_file: "{{env.ONE_VM_KEY_FILE}}"
+    ssh_user: "root"
+    ssh_nic_id: "{{env.ONE_NETWORK_SSH_NIC_ID | default('0')}}"
+    teardown_flag: "{{(env.ONE_NETWORK_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  validations:
+    network:
+      checks:
+        SubnetConfigCheck:
+          step: subnet_config
+          min_subnets: 4
+          require_multi_az: false
+        VpcIpConfigCheck:
+          step: vpc_ip_config
+          auto_assign_ip_mode: instance
+        DhcpIpManagementCheck:
+          step: dhcp_ip_test
+
+    sdn:
+      checks:
+        FloatingIpCheck:
+          step: floating_ip_test
+          max_switch_seconds: 30
+
+  exclude:
+    tests:
+      - SdnHardwareFaultLoggingCheck
+      - SdnFilterAuditTrailCheck
+      - ByoipCheck
+      - LocalizedDnsCheck
+      - BackendSwitchFabricCheck
+      - NvlinkDomainCheck

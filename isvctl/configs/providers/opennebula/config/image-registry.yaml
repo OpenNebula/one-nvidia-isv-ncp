@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+# OpenNebula Image Registry Validation Configuration
+#
+# Imports validations from the provider-agnostic image-registry canonical config.
+# This file wires the OpenNebula image datastore and VM template CRUD operations
+# needed by FieldExistsCheck and CrudOperationsCheck.
+#
+# Steps:
+#   1. upload_image - pyone: Allocates an OS image in an OpenNebula image datastore
+#   2. crud_image - pyone: Get, list, clone, delete image lifecycle
+#   3. crud_install_config - pyone: VM template create/read/update/delete lifecycle
+#   4. teardown - pyone: Deletes the uploaded source image
+#
+# Usage:
+#   uv run isvctl test run -f isvctl/configs/providers/opennebula/config/image-registry.yaml
+
+import:
+  - ../../../suites/image-registry.yaml
+
+version: "1.0"
+
+commands:
+  image_registry:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: upload_image
+        phase: setup
+        command: "python3 ../scripts/image-registry/upload_image.py"
+        args:
+          - "--image-url"
+          - "{{image_url}}"
+          - "--image-format"
+          - "{{image_format}}"
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
+        timeout: 900
+        output_schema: iso_import
+
+      - name: crud_image
+        phase: test
+        command: "python3 ../scripts/image-registry/crud_image.py"
+        args:
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--datastore-id"
+          - "{{datastore_id}}"
+        timeout: 900
+
+      - name: crud_install_config
+        phase: test
+        command: "python3 ../scripts/image-registry/crud_install_config.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+        timeout: 120
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/image-registry/teardown.py"
+        args:
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+          - "--xmlrpc-url"
+          - "{{xmlrpc_url}}"
+          - "--auth"
+          - "{{auth}}"
+          - "{{teardown_flag}}"
+        timeout: 300
+        output_schema: teardown
+
+tests:
+  cluster_name: "opennebula-image-registry-validation"
+  description: "OpenNebula image datastore and VM template validation tests"
+
+  settings:
+    region: "{{env.ONE_REGION | default('opennebula')}}"
+    xmlrpc_url: "{{env.ONE_XMLRPC | default('http://localhost:2633/RPC2')}}"
+    auth: "{{env.ONE_AUTH | default('oneadmin:opennebula')}}"
+    datastore_id: "{{env.ONE_IMAGE_DATASTORE_ID | default('1')}}"
+    image_url: "{{env.ONE_IMAGE_URL | default('https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img')}}"
+    image_format: "{{env.ONE_IMAGE_FORMAT | default('qcow2')}}"
+    teardown_flag: "{{(env.ONE_IMAGE_REGISTRY_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  exclude:
+    labels: ["ssh"]

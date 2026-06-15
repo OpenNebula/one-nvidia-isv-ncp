@@ -41,6 +41,7 @@ from isvtest.core.ssh import (
     get_ssh_client,
     get_ssh_config,
     run_ssh_command,
+    ssh_auth_available,
 )
 from isvtest.core.validation import BaseValidation
 
@@ -90,13 +91,14 @@ class NimHealthCheck(BaseValidation):
         user = ssh_cfg["ssh_user"]
         key_path = ssh_cfg["ssh_key_path"]
         port = _get_nim_port(self.config)
+        inventory = self.config.get("inventory", {})
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, inventory):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=inventory)
 
             exit_code, stdout, _ = run_ssh_command(
                 ssh,
@@ -153,13 +155,14 @@ class NimInferenceCheck(BaseValidation):
         prompt = self.config.get("prompt", "What is CUDA?")
         max_tokens = self.config.get("max_tokens", 50)
         model = self.config.get("model") or self.config.get("step_output", {}).get("model")
+        inventory = self.config.get("inventory", {})
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, inventory):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=inventory)
 
             # Auto-detect model name if not provided
             if not model:
@@ -276,13 +279,14 @@ class NimModelCheck(BaseValidation):
         key_path = ssh_cfg["ssh_key_path"]
         port = _get_nim_port(self.config)
         expected_model = self.config.get("expected_model")
+        inventory = self.config.get("inventory", {})
 
-        if not host or not key_path:
+        if not host or not ssh_auth_available(key_path, self.config, inventory):
             self.set_failed("Missing host or key_file")
             return
 
         try:
-            ssh = get_ssh_client(host, user, key_path)
+            ssh = get_ssh_client(host, user, key_path, config=self.config, inventory=inventory)
 
             exit_code, stdout, stderr = run_ssh_command(ssh, f"curl -sf http://localhost:{port}/v1/models 2>/dev/null")
             if exit_code != 0 or not stdout.strip():

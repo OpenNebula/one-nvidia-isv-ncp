@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+"""Remove a NIM container from an OpenNebula/NICo bare-metal instance."""
+
+import argparse
+import json
+import os
+import re
+import shlex
+import sys
+
+from deploy_nim import resolve_instance, ssh_run
+
+_CONTAINER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Tear down NIM container on OpenNebula BM instance")
+    parser.add_argument("--instance-id", type=int, required=True, help="OpenNebula VM ID")
+    parser.add_argument("--container-name", default="isv-nim", help="Docker container name")
+    parser.add_argument("--remove-image", action="store_true", help="Also remove the container image")
+    parser.add_argument("--api-timeout", type=int, default=60, help="NICo API request timeout")
+    args = parser.parse_args()
+
+    result = {
+        "success": False,
+        "platform": "bm",
+        "instance_id": str(args.instance_id),
+        "container_removed": False,
+        "image_removed": False,
+        "container_name": args.container_name,
+        "ssh_user": "ubuntu",
+    }
+    if os.environ.get("ONE_BM_NICO_PROXY") and os.environ.get("ONE_BM_NICO_JUMPHOST"):
+        result["ssh_proxy"] = os.environ["ONE_BM_NICO_PROXY"]
+        result["ssh_jumphost"] = os.environ["ONE_BM_NICO_JUMPHOST"]
+
+    if not _CONTAINER_NAME_RE.match(args.container_name):
+        result["error"] = f"Invalid container name: {args.container_name!r}"
+        print(json.dumps(result, indent=2))
+        return 1
+
+    try:
+        deploy_id, host = resolve_instance(args.instance_id, args.api_timeout)
+        result.update({"deploy_id": deploy_id, "nico_instance_id": deploy_id, "host": host})
+
+        image_name = ""
+        if args.remove_image:
+            _exit_code, stdout, _stderr = ssh_run(
+                host,
+                f"sudo docker inspect -f '{{{{.Config.Image}}}}' {args.container_name} 2>/dev/null",
+                60,
+            )
+            image_name = stdout.strip()
+
+        exit_code, stdout, stderr = ssh_run(host, "command -v docker >/dev/null 2>&1", 30)
+        if exit_code != 0:
+            result["container_removed"] = True
+            result["success"] = True
+            result["message"] = "Docker is not installed; no NIM container to remove"
+            print(json.dumps(result, indent=2))
+            return 0
+
+        exit_code, stdout, stderr = ssh_run(host, f"sudo docker rm -f {args.container_name} 2>&1", 120)
+        already_gone = "No such container" in stdout or "No such container" in stderr
+        result["container_removed"] = exit_code == 0 or already_gone
+        if not result["container_removed"]:
+            result["error"] = (stderr or stdout or f"docker rm exited with status {exit_code}").strip()
+
+        if args.remove_image and image_name:
+            exit_code, _stdout, _stderr = ssh_run(host, f"sudo docker rmi {shlex.quote(image_name)} 2>&1", 120)
+            result["image_removed"] = exit_code == 0
+
+        result["success"] = result["container_removed"]
+    except Exception as e:
+        if "Connection closed" in str(e):
+            result["container_removed"] = True
+            result["success"] = True
+            result["message"] = f"SSH unavailable during VM cleanup; treating NIM teardown as no-op: {e}"
+            print(json.dumps(result, indent=2))
+            return 0
+        result["error"] = str(e)
+
+    print(json.dumps(result, indent=2))
+    return 0 if result["success"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
