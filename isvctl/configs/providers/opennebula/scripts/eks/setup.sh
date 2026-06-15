@@ -29,7 +29,7 @@ set -eo pipefail
 CLUSTER_NAME="${ONE_CLUSTER_NAME:-isv-k8s-cluster}"
 K8S_VERSION="v1.34.2"
 PUBLIC_NETWORK_ID=0
-PRIVATE_NETWORK_ID=1
+PRIVATE_NETWORK_ID=2
 CONTROL_PLANE_FAMILY="general"
 CONTROL_PLANE_FLAVOUR="standalone"
 NODEGROUP_FAMILY="general"
@@ -211,6 +211,50 @@ spec:
     cdi:
       nriPluginEnabled: true
 EOF
+
+# Install NVIDIA Network Operator
+helm repo add nvidia "$NVIDIA_CHART_REPO" \
+   && helm repo update
+
+helm install network-operator nvidia/network-operator \
+  -n nvidia-network-operator \
+  --create-namespace \
+  --wait
+
+cat > nic-cluster-policy.yaml <<'EOF'
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+  rdmaSharedDevicePlugin:
+    image: k8s-rdma-shared-dev-plugin
+    repository: nvcr.io/nvidia/mellanox
+    version: network-operator-v26.4.0
+    config: |
+      {
+        "configList": [
+          {
+            "resourceName": "rdma_shared_device_a",
+            "rdmaHcaMax": 63,
+            "selectors": {
+              "vendors": ["15b3"],
+              "deviceIDs": ["1021"]
+            }
+          }
+        ]
+      }
+EOF
+
+kubectl apply -f nic-cluster-policy.yaml
+
+# Install DRA operator
+helm install nvidia-dra-driver-gpu nvidia/nvidia-dra-driver-gpu \
+    --create-namespace \
+    --namespace nvidia-dra-driver-gpu \
+    --set nvidiaDriverRoot=/run/nvidia/driver \
+    --set resources.gpus.enabled=false
+
 
 # Install Kubeflow MPI Operator
 kubectl apply --server-side -f "$KUBEFLOW_MPI_URL" >&2
