@@ -44,6 +44,17 @@ commands:
           K8S_CSI_SHARED_FS_SC: "longhorn"
           K8S_CSI_NFS_SC: "longhorn"
 
+      - name: create_test_shared_vpc_cluster
+        phase: setup
+        command: "../scripts/eks/create_shared_vpc_cluster.sh"
+        output_schema: multi_cluster
+        requires_available_validations:
+          - K8sMultiClusterSameVpcCheck
+        timeout: 1800
+        env:
+          ONE_PRIMARY_CLUSTER_NAME: "isv-k8s-cluster"
+          ONE_SECONDARY_CLUSTER_NAME: "isv-k8s-cluster-shared-vnet"
+
       - name: create_test_gpu_node_pool
         phase: test
         command: "../scripts/eks/create_node_pool.sh"
@@ -79,6 +90,13 @@ commands:
           LABELS_JSON: '{"isv.ncp.validation/workload":"test"}'
           TAINTS_JSON: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
 
+      - name: teardown_test_shared_vpc_cluster
+        phase: teardown
+        command: "../scripts/eks/delete_shared_vpc_cluster.sh"
+        timeout: 900
+        env:
+          ONE_SECONDARY_CLUSTER_NAME: "isv-k8s-cluster-shared-vnet"
+
       - name: teardown
         phase: teardown
         command: "../scripts/eks/teardown.sh"
@@ -90,6 +108,11 @@ tests:
   description: "OpenNebula Elastic Kubernetes Service GPU cluster validation"
 
   validations:
+    k8s_multi_cluster:
+      checks:
+        K8sMultiClusterSameVpcCheck:
+          step: create_test_shared_vpc_cluster
+
     k8s_storage:
       checks:
         K8sCsiStorageTypesCheck:
