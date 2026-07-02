@@ -72,6 +72,7 @@ def main() -> int:
             "NICO_ISV_CLIENT_SECRET": env_value("ONE_BM_NICO_ISV_CLIENT_SECRET"),
             "NICO_TARGET_SCOPES": env_value("ONE_BM_NICO_TARGET_SCOPES"),
             "NICO_ALLOCATION": env_value("ONE_BM_NICO_ALLOCATION"),
+            "NICO_API_TIMEOUT": os.environ.get("ONE_BM_NICO_API_TIMEOUT", "300"),
         }
 
         current = get_value(one.host.info(host_id), "TEMPLATE", {})

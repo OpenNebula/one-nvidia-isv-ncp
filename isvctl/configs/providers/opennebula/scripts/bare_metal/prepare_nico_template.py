@@ -113,6 +113,9 @@ def build_template(args: argparse.Namespace) -> str:
         "NIC = [",
         f"  NICO_VPC_PREFIX_ID = {quote(args.vpc_prefix_id)}",
         "]",
+        "NIC_IB = [",
+        f"  PARTITION_NAME = {quote(args.infiniband_partition_name)}",
+        "]",
         f"SCHED_REQUIREMENTS = {quote(args.sched_requirements)}",
     ]
 
@@ -156,11 +159,16 @@ def main() -> int:
             if not isinstance(nics, list):
                 nics = [nics]
             first_nic = object_dict(nics[0]) if nics else {}
+            nic_ibs = get_value(template_body, "NIC_IB", [])
+            if not isinstance(nic_ibs, list):
+                nic_ibs = [nic_ibs]
+            first_nic_ib = object_dict(nic_ibs[0]) if nic_ibs else {}
             result["template_id"] = str(template_id)
             result["template_name"] = str(get_value(template, "NAME", "")) or f"template-{template_id}"
             result["instance_type_id"] = str(template_body.get("NICO_INSTANCE_TYPE_ID") or "")
             result["vpc_id"] = str(template_body.get("NICO_VPC_ID") or "")
             result["vpc_prefix_id"] = str(first_nic.get("NICO_VPC_PREFIX_ID") or "")
+            result["infiniband_partition_name"] = str(first_nic_ib.get("PARTITION_NAME") or "")
             result["user_data_public_key"] = bool(template_body.get("NICO_USER_DATA"))
             result["user_data_extra_public_key"] = bool(args.ssh_pubkey)
             result["existing_template"] = True
@@ -174,6 +182,7 @@ def main() -> int:
         args.user_data = build_user_data(args.ssh_pubkey)
         args.vpc_id = env_value("ONE_BM_NICO_VPC_ID")
         args.vpc_prefix_id = env_value("ONE_BM_NICO_VPC_PREFIX_ID")
+        args.infiniband_partition_name = f"ib-test-{uuid.uuid4().hex[:8]}"
         args.sched_requirements = env_value("ONE_BM_NICO_SCHED_REQUIREMENTS")
 
         template_body = build_template(args)
@@ -183,6 +192,7 @@ def main() -> int:
         result["instance_type_id"] = args.instance_type_id
         result["vpc_id"] = args.vpc_id
         result["vpc_prefix_id"] = args.vpc_prefix_id
+        result["infiniband_partition_name"] = args.infiniband_partition_name
         result["user_data_public_key"] = True
         result["user_data_extra_public_key"] = bool(args.ssh_pubkey)
         result["success"] = True

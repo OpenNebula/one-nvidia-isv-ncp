@@ -231,6 +231,8 @@ commands:
           - "{{steps.prepare_nico_template.template_id}}"
           - "--host-id"
           - "{{steps.prepare_nico_host.host_id}}"
+          - "--infiniband-partition-name"
+          - "{{steps.prepare_nico_template.infiniband_partition_name}}"
           - "{{teardown_flag}}"
         timeout: 600
 
